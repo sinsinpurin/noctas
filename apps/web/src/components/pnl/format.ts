@@ -25,6 +25,16 @@ export function pnlColor(value: number) {
   return value >= 0 ? PROFIT_COLOR : LOSS_COLOR;
 }
 
+/** 低勝率アラートのしきい値。少ないサンプル数でのノイズを警告しないよう最低件数を要求する */
+export const LOW_WIN_RATE_MIN_SAMPLE = 5;
+export const LOW_WIN_RATE_THRESHOLD = 0.4;
+
+/** サンプル数が十分(5件以上)かつ勝率が40%未満なら低勝率とみなす */
+export function isLowWinRate(winCount: number, count: number): boolean {
+  if (count < LOW_WIN_RATE_MIN_SAMPLE) return false;
+  return winCount / count < LOW_WIN_RATE_THRESHOLD;
+}
+
 export function formatDateTime(ts: number) {
   return new Date(ts).toLocaleString("ja-JP", {
     month: "2-digit",

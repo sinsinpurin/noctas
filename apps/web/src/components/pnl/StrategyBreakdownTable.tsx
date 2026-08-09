@@ -2,7 +2,7 @@
 
 import { Box, Grid, Text } from "@chakra-ui/react";
 import type { PnlStrategyBreakdown } from "@noctas/shared";
-import { formatSignedJpy, pnlColor } from "./format";
+import { formatSignedJpy, isLowWinRate, pnlColor } from "./format";
 
 const COLUMNS = "minmax(160px, 2fr) minmax(80px, 1fr) minmax(70px, 0.8fr) minmax(70px, 0.8fr) minmax(80px, 0.9fr) minmax(110px, 1.1fr)";
 
@@ -46,6 +46,7 @@ export function StrategyBreakdownTable({ rows }: { rows: PnlStrategyBreakdown[] 
 
         {rows.map((row) => {
           const winRate = row.closedCount > 0 ? (row.winCount / row.closedCount) * 100 : 0;
+          const lowWinRate = isLowWinRate(row.winCount, row.closedCount);
           return (
             <Grid
               key={row.strategyId ?? "__other__"}
@@ -80,8 +81,14 @@ export function StrategyBreakdownTable({ rows }: { rows: PnlStrategyBreakdown[] 
               <Text fontFamily="mono" fontSize="xs" color="text.secondary" textAlign="right">
                 {row.closedCount}回
               </Text>
-              <Text fontFamily="mono" fontSize="xs" color="text.secondary" textAlign="right">
-                {winRate.toFixed(0)}%
+              <Text
+                fontFamily="mono"
+                fontSize="xs"
+                color={lowWinRate ? "signal.red" : "text.secondary"}
+                fontWeight={lowWinRate ? "700" : "normal"}
+                textAlign="right"
+              >
+                {lowWinRate ? `⚠ ${winRate.toFixed(0)}%` : `${winRate.toFixed(0)}%`}
               </Text>
               <Text fontFamily="mono" fontSize="xs" color={pnlColor(row.realizedPnl)} textAlign="right">
                 {formatSignedJpy(row.realizedPnl)}
