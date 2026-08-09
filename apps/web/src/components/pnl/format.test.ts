@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatJpy,
   formatSignedJpy,
+  isLowWinRate,
   LOSS_COLOR,
   pnlColor,
   PROFIT_COLOR,
@@ -63,6 +64,29 @@ describe("formatCostJpy", () => {
 
   it("rounds to whole yen once the amount reaches 100", () => {
     expect(formatCostJpy(1234.6)).toBe("¥1,235");
+  });
+});
+
+describe("isLowWinRate", () => {
+  it("is false when the sample size is too small, even at a low win rate", () => {
+    expect(isLowWinRate(0, 4)).toBe(false);
+    expect(isLowWinRate(1, 4)).toBe(false);
+  });
+
+  it("is true once the sample size is sufficient and win rate is under the threshold", () => {
+    expect(isLowWinRate(1, 6)).toBe(true);
+  });
+
+  it("is false at exactly the win rate threshold (boundary)", () => {
+    expect(isLowWinRate(2, 5)).toBe(false);
+  });
+
+  it("is true right at the minimum sample size boundary when win rate is low", () => {
+    expect(isLowWinRate(1, 5)).toBe(true);
+  });
+
+  it("is false at zero samples (avoids division by zero)", () => {
+    expect(isLowWinRate(0, 0)).toBe(false);
   });
 });
 

@@ -2,7 +2,7 @@
 
 import { Box, HStack, Stack, Text } from "@chakra-ui/react";
 import type { PnlReasonBreakdown, TradeReason } from "@noctas/shared";
-import { formatSignedJpy, pnlColor } from "./format";
+import { formatSignedJpy, isLowWinRate, pnlColor } from "./format";
 
 const REASON_STYLE: Record<TradeReason, { label: string; color: string }> = {
   ai_decision: { label: "AI判断", color: "#FF003C" },
@@ -41,6 +41,7 @@ export function ReasonBreakdownPanel({ byReason }: { byReason: PnlReasonBreakdow
       {rows.map((row) => {
         const style = REASON_STYLE[row.reason];
         const winRate = row.count > 0 ? (row.winCount / row.count) * 100 : 0;
+        const lowWinRate = isLowWinRate(row.winCount, row.count);
         return (
           <Box
             key={row.reason}
@@ -77,8 +78,13 @@ export function ReasonBreakdownPanel({ byReason }: { byReason: PnlReasonBreakdow
               <Text fontSize="xs" color="text.secondary" fontFamily="mono">
                 決済 {row.count}回
               </Text>
-              <Text fontSize="xs" color="text.secondary" fontFamily="mono">
-                勝率 {winRate.toFixed(0)}% ({row.winCount}勝{row.count - row.winCount}敗)
+              <Text
+                fontSize="xs"
+                color={lowWinRate ? "signal.red" : "text.secondary"}
+                fontFamily="mono"
+                fontWeight={lowWinRate ? "700" : "normal"}
+              >
+                {lowWinRate ? "⚠ " : ""}勝率 {winRate.toFixed(0)}% ({row.winCount}勝{row.count - row.winCount}敗)
               </Text>
             </HStack>
           </Box>
