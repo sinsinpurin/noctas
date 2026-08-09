@@ -191,6 +191,51 @@ function computeAggregate(windows: WalkForwardWindowResult[]): WalkForwardSummar
   };
 }
 
+/** グリッド候補を安定なキー文字列に変換する(trailingStopPct=nullは"null"として区別する) */
+function paramKey(params: GridCandidate): string {
+  return `${params.stopLossPct}|${params.takeProfitPct}|${params.trailingStopPct ?? "null"}`;
+}
+
+/**
+ * 各ウィンドウのbestParamsから、戦略に適用する推奨パラメータを1つ選ぶ純粋関数。
+ * 最も多くのウィンドウで選ばれた組み合わせ(mode)を採用し、複数の組み合わせが同数タイの場合は
+ * out-of-sample realizedPnl合計が最大のものを採用する。ウィンドウが1つも無ければnullを返す。
+ */
+export function pickRecommendedParams(
+  windows: WalkForwardWindowResult[]
+): { stopLossPct: number; takeProfitPct: number; trailingStopPct: number | null } | null {
+  if (windows.length === 0) return null;
+
+  const groups = new Map<
+    string,
+    { params: WalkForwardWindowResult["bestParams"]; count: number; oosRealizedPnl: number }
+  >();
+  for (const w of windows) {
+    const key = paramKey(w.bestParams);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.count += 1;
+      existing.oosRealizedPnl += w.outOfSample.realizedPnl;
+    } else {
+      groups.set(key, { params: w.bestParams, count: 1, oosRealizedPnl: w.outOfSample.realizedPnl });
+    }
+  }
+
+  let best: { params: WalkForwardWindowResult["bestParams"]; count: number; oosRealizedPnl: number } | null =
+    null;
+  for (const candidate of groups.values()) {
+    if (
+      best === null ||
+      candidate.count > best.count ||
+      (candidate.count === best.count && candidate.oosRealizedPnl > best.oosRealizedPnl)
+    ) {
+      best = candidate;
+    }
+  }
+
+  return best ? best.params : null;
+}
+
 /**
  * 1戦略についてウォークフォワード検証を実行する。
  * 各ウィンドウのin-sampleに対しグリッド全通り(既定48通り)をbacktestEngine.runBacktestで試し、
@@ -235,6 +280,7 @@ export function runWalkForwardForStrategy(
       windowCount: 0,
       windows: [],
       aggregate: emptyAggregate(),
+      recommendedParams: null,
       dataStartAt: candles[0]?.time,
       dataEndAt: candles[candles.length - 1]?.time,
     };
@@ -283,6 +329,7 @@ export function runWalkForwardForStrategy(
     windowCount: windows.length,
     windows,
     aggregate: computeAggregate(windows),
+    recommendedParams: pickRecommendedParams(windows),
     dataStartAt: candles[0]?.time,
     dataEndAt: candles[candles.length - 1]?.time,
   };

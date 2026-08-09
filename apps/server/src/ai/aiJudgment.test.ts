@@ -12,10 +12,11 @@ vi.mock("./claudeService", () => ({
 }));
 
 const positionFindMany = vi.fn();
+const aiDecisionLogCreate = vi.fn();
 vi.mock("../db/prisma", () => ({
   prisma: {
     aiDecisionLog: {
-      create: vi.fn().mockResolvedValue({ createdAt: new Date() }),
+      create: (...args: unknown[]) => aiDecisionLogCreate(...args),
       aggregate: vi.fn().mockResolvedValue({ _sum: { inputTokens: 0, outputTokens: 0 }, _count: { id: 0 } }),
     },
     position: {
@@ -58,6 +59,7 @@ beforeEach(() => {
     usage: { inputTokens: 0, outputTokens: 0, model: config.ai.model },
   });
   positionFindMany.mockReset().mockResolvedValue([]);
+  aiDecisionLogCreate.mockReset().mockResolvedValue({ createdAt: new Date() });
   getCandleHistory.mockReset().mockReturnValue([]);
   isBuyHalted.mockReset().mockReturnValue(false);
   getCircuitBreakerStatus.mockReset().mockReturnValue({ halted: false, reason: null, haltedAt: null });
@@ -151,6 +153,47 @@ describe("aiJudgment / indicators in the Claude snapshot", () => {
     expect(snapshot.indicators.rsi14).toBeCloseTo(expectedRsi14);
     expect(snapshot.indicators.smaDeviationPct).toBeCloseTo(expectedDeviationPct);
     expect(snapshot.indicators.volatilityPct).toBeCloseTo(expectedVolatilityPct);
+  });
+
+  it("persists the same rsi14/smaDeviationPct/volatilityPct values into AiDecisionLog.create", async () => {
+    setWatchedPairs(new Set(["etc_jpy"]));
+    recordPrice("etc_jpy", 122);
+    const closes = [
+      100, 102, 101, 103, 105, 104, 106, 108, 107, 109, 110, 108, 111, 113, 112, 114, 115, 113,
+      116, 118, 120, 119, 121, 123, 122,
+    ];
+    getCandleHistory.mockReturnValue(candlesFromCloses(closes));
+
+    const stop = startAiJudgmentLoop();
+    await vi.advanceTimersByTimeAsync(config.ai.pollIntervalMs);
+    stop();
+
+    expect(aiDecisionLogCreate).toHaveBeenCalledTimes(1);
+    const snapshot = getAiDecision.mock.calls[0][0] as MarketSnapshot;
+    const createArgs = aiDecisionLogCreate.mock.calls[0][0] as {
+      data: { rsi14: number | null; smaDeviationPct: number | null; volatilityPct: number | null };
+    };
+    expect(createArgs.data.rsi14).toBe(snapshot.indicators.rsi14);
+    expect(createArgs.data.smaDeviationPct).toBe(snapshot.indicators.smaDeviationPct);
+    expect(createArgs.data.volatilityPct).toBe(snapshot.indicators.volatilityPct);
+  });
+
+  it("persists null indicators into AiDecisionLog.create when there isn't enough candle history", async () => {
+    setWatchedPairs(new Set(["neo_jpy"]));
+    recordPrice("neo_jpy", 100);
+    getCandleHistory.mockReturnValue(candlesFromCloses([100, 101, 102]));
+
+    const stop = startAiJudgmentLoop();
+    await vi.advanceTimersByTimeAsync(config.ai.pollIntervalMs);
+    stop();
+
+    expect(aiDecisionLogCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        rsi14: null,
+        smaDeviationPct: null,
+        volatilityPct: null,
+      }),
+    });
   });
 });
 

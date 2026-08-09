@@ -117,3 +117,26 @@ export async function runWalkForwardValidation(): Promise<WalkForwardBatchRespon
   // empty body when the header claims application/json (FST_ERR_CTP_EMPTY_JSON_BODY).
   return handle(await fetch(`${API_URL}/api/strategies/walk-forward`, { method: "POST" }));
 }
+
+export interface WalkForwardRecommendedParams {
+  stopLossPct: number;
+  takeProfitPct: number;
+  trailingStopPct: number | null;
+}
+
+/**
+ * ウォークフォワード検証のrecommendedParamsを稼働中戦略のライブリスク設定へ即時反映する。
+ * サーバー側でvalidateRiskSettingsによる再検証が行われる。
+ */
+export async function applyWalkForwardParams(
+  id: string,
+  params: WalkForwardRecommendedParams
+): Promise<Strategy> {
+  return handle(
+    await fetch(`${API_URL}/api/strategies/${id}/apply-walk-forward-params`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    })
+  );
+}

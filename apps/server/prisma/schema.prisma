@@ -18,6 +18,11 @@ model AiDecisionLog {
   outputTokens Int      @default(0)
   createdAt    DateTime @default(now())
 
+  // 判断時点のテクニカル指標スナップショット(履歴データや算出不能時はnull)
+  rsi14           Float?
+  smaDeviationPct Float?
+  volatilityPct   Float?
+
   trades Trade[]
 }
 

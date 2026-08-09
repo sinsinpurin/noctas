@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { StrategyGraph, WalkForwardParamGrid } from "@noctas/shared";
+import type { StrategyGraph, WalkForwardParamGrid, WalkForwardWindowResult } from "@noctas/shared";
 import type { CandleBucket } from "./botEngine";
 
 // walkForwardEngine.ts imports backtestEngine.ts, which pulls in strategy/botEngine.ts only for
@@ -15,8 +15,14 @@ vi.mock("./botEngine", () => ({
 // import ../db/prisma at module scope; mock it purely to avoid constructing a real PrismaClient.
 vi.mock("../db/prisma", () => ({ prisma: {} }));
 
-const { buildWindows, runWalkForwardForStrategy, maxWindowsForBatch, MIN_WINDOWS, MAX_WINDOWS } =
-  await import("./walkForwardEngine");
+const {
+  buildWindows,
+  runWalkForwardForStrategy,
+  maxWindowsForBatch,
+  pickRecommendedParams,
+  MIN_WINDOWS,
+  MAX_WINDOWS,
+} = await import("./walkForwardEngine");
 
 function candle(time: number, close: number, overrides: Partial<CandleBucket> = {}): CandleBucket {
   return {
@@ -91,6 +97,79 @@ describe("buildWindows", () => {
   });
 });
 
+/**
+ * pickRecommendedParamsはwindow.bestParamsとwindow.outOfSample.realizedPnlしか読まないので、
+ * 他のWalkForwardWindowResultフィールドはテストの意図を汚さないダミー値で埋める。
+ */
+function fakeWindow(
+  bestParams: { stopLossPct: number; takeProfitPct: number; trailingStopPct: number | null },
+  outOfSampleRealizedPnl: number,
+  windowIndex = 0
+): WalkForwardWindowResult {
+  const emptySummary = {
+    realizedPnl: outOfSampleRealizedPnl,
+    winCount: 0,
+    lossCount: 0,
+    winRate: null,
+    profitFactor: null,
+    maxDrawdown: 0,
+    candleCount: 0,
+    totalFeesJpy: 0,
+    grossPnlJpy: 0,
+    feeLossCount: 0,
+    equityCurve: [],
+    trades: [],
+  };
+  return {
+    windowIndex,
+    inSampleStart: 0,
+    inSampleEnd: 0,
+    outOfSampleStart: 0,
+    outOfSampleEnd: 0,
+    bestParams,
+    inSample: { ...emptySummary, realizedPnl: 0 },
+    outOfSample: emptySummary,
+  } as WalkForwardWindowResult;
+}
+
+describe("pickRecommendedParams", () => {
+  it("returns null when there are no windows", () => {
+    expect(pickRecommendedParams([])).toBeNull();
+  });
+
+  it("picks the combination selected by the most windows (mode)", () => {
+    const paramsA = { stopLossPct: 1, takeProfitPct: 2, trailingStopPct: null };
+    const paramsB = { stopLossPct: 3, takeProfitPct: 6, trailingStopPct: 1.5 };
+    const windows = [
+      fakeWindow(paramsA, 100, 0),
+      fakeWindow(paramsA, 200, 1),
+      fakeWindow(paramsB, 1000, 2),
+    ];
+    expect(pickRecommendedParams(windows)).toEqual(paramsA);
+  });
+
+  it("breaks a tie in window-count by total out-of-sample realizedPnl", () => {
+    const paramsA = { stopLossPct: 1, takeProfitPct: 2, trailingStopPct: null };
+    const paramsB = { stopLossPct: 2, takeProfitPct: 4, trailingStopPct: 3 };
+    // Both combinations are picked by exactly 2 windows; B has the larger summed OOS pnl.
+    const windows = [
+      fakeWindow(paramsA, 100, 0),
+      fakeWindow(paramsA, 50, 1),
+      fakeWindow(paramsB, 90, 2),
+      fakeWindow(paramsB, 90, 3),
+    ];
+    expect(pickRecommendedParams(windows)).toEqual(paramsB);
+  });
+
+  it("treats trailingStopPct: null as distinct from any numeric trailing value", () => {
+    const withoutTrailing = { stopLossPct: 1.5, takeProfitPct: 3, trailingStopPct: null };
+    const withTrailing = { stopLossPct: 1.5, takeProfitPct: 3, trailingStopPct: 1.5 };
+    const windows = [fakeWindow(withoutTrailing, 10, 0), fakeWindow(withTrailing, 10_000, 1)];
+    // 1-vs-1 tie on count -> resolved by OOS pnl, which favors withTrailing here.
+    expect(pickRecommendedParams(windows)).toEqual(withTrailing);
+  });
+});
+
 describe("maxWindowsForBatch", () => {
   it("divides MAX_WINDOWS across active strategies, never below MIN_WINDOWS", () => {
     expect(maxWindowsForBatch(1)).toBe(MAX_WINDOWS);
@@ -114,6 +193,7 @@ describe("runWalkForwardForStrategy / insufficient data", () => {
     );
     expect(result.windowCount).toBe(0);
     expect(result.windows).toEqual([]);
+    expect(result.recommendedParams).toBeNull();
     expect(result.aggregate).toEqual({
       outOfSampleRealizedPnl: 0,
       outOfSampleWinRate: null,
@@ -189,6 +269,8 @@ describe("runWalkForwardForStrategy / deterministic best-parameter selection and
     expect(result.aggregate.outOfSampleProfitFactor).toBeNull();
     expect(result.aggregate.outOfSampleRealizedPnl).toBeGreaterThan(0);
     expect(result.aggregate.consistencyRatio).toBe(1);
+    // Every window picked the same bestParams, so that's unambiguously the recommendation.
+    expect(result.recommendedParams).toEqual({ stopLossPct: 1, takeProfitPct: 2, trailingStopPct: null });
   });
 
   it("falls back to the highest-pnl candidate (with a low-confidence warning) when no candidate reaches MIN_TRADES_IS", () => {
