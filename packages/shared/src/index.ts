@@ -334,6 +334,11 @@ export interface WalkForwardSummary {
     /** OOS pnlが非負だったウィンドウの割合(0-1)。ウィンドウ0件ならnull */
     consistencyRatio: number | null;
   };
+  /**
+   * 全ウィンドウのbestParamsから選んだ推奨パラメータ(最頻値。複数タイの場合はout-of-sample
+   * realizedPnl合計が最大のものを採用)。ウィンドウが1つも無ければnull。
+   */
+  recommendedParams: { stopLossPct: number; takeProfitPct: number; trailingStopPct: number | null } | null;
   dataStartAt?: number;
   dataEndAt?: number;
 }

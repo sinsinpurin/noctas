@@ -198,6 +198,9 @@ async function refreshPair(pair: string, now: number) {
       model: decision.usage.model,
       inputTokens: decision.usage.inputTokens,
       outputTokens: decision.usage.outputTokens,
+      rsi14: indicators.rsi14,
+      smaDeviationPct: indicators.smaDeviationPct,
+      volatilityPct: indicators.volatilityPct,
     },
   });
 

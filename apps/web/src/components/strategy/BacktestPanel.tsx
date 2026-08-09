@@ -12,9 +12,15 @@ import type {
   WalkForwardBatchResponse,
 } from "@noctas/shared";
 import { CyberButton } from "@/components/ui/CyberButton";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EquityCurveChart } from "@/components/pnl/EquityCurveChart";
 import { formatDateTime, formatJpy, formatSignedJpy, pnlColor } from "@/components/pnl/format";
-import { runBacktest, runWalkForwardValidation } from "@/lib/strategyApi";
+import {
+  applyWalkForwardParams,
+  runBacktest,
+  runWalkForwardValidation,
+  type WalkForwardRecommendedParams,
+} from "@/lib/strategyApi";
 import { riskFormToInput, type RiskFormValues } from "@/components/strategy/RiskSettingsPanel";
 
 interface BacktestPanelProps {
@@ -23,6 +29,8 @@ interface BacktestPanelProps {
   timeframe: CandleTimeframe;
   riskForm: RiskFormValues;
   maxPositionJpy: number;
+  /** 推奨値の適用が成功した戦略ID(WalkForwardSection内)を通知する。呼び出し元はリスト再取得・riskForm再同期に使う */
+  onStrategyRiskApplied?: (strategyId: string) => void;
 }
 
 interface TileProps {
@@ -68,7 +76,14 @@ const REASON_LABEL: Record<string, string> = {
  * Bot Blueprintのキャンバス(保存前でも可)を、サーバーが保持している過去ローソク足履歴で
  * ウォークフォワード再生する読み取り専用バックテストパネル。DBへの書き込みは発生しない。
  */
-export function BacktestPanel({ graph, pair, timeframe, riskForm, maxPositionJpy }: BacktestPanelProps) {
+export function BacktestPanel({
+  graph,
+  pair,
+  timeframe,
+  riskForm,
+  maxPositionJpy,
+  onStrategyRiskApplied,
+}: BacktestPanelProps) {
   const [loading, setLoading] = useState(false);
   const [runningPeriod, setRunningPeriod] = useState<BacktestPeriod | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -211,7 +226,7 @@ export function BacktestPanel({ graph, pair, timeframe, riskForm, maxPositionJpy
       )}
 
       <Box borderTopWidth="1px" borderColor="border.grid" pt={4}>
-        <WalkForwardSection />
+        <WalkForwardSection onStrategyRiskApplied={onStrategyRiskApplied} />
       </Box>
     </Stack>
   );
@@ -226,11 +241,23 @@ function formatPct(value: number | null): string {
  * SL/TP/トレーリングストップを、ローリング3ヶ月スナップショットに対して複数ウィンドウで
  * ウォークフォワード検証する読み取り専用セクション。戦略の保存済み設定は一切変更しない。
  */
-function WalkForwardSection() {
+function WalkForwardSection({
+  onStrategyRiskApplied,
+}: {
+  onStrategyRiskApplied?: (strategyId: string) => void;
+}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<WalkForwardBatchResponse | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [applyingId, setApplyingId] = useState<string | null>(null);
+  // window.confirm()の代わりに使う非ブロッキングな確認ダイアログの保留状態(ConfirmDialogの
+  // コメント参照)。ワンクリック適用が確認なしで行われないよう、必ずこのダイアログを経由する
+  const [pendingApply, setPendingApply] = useState<{
+    strategyId: string;
+    strategyName: string;
+    params: WalkForwardRecommendedParams;
+  } | null>(null);
 
   const handleRun = useCallback(async () => {
     setError(null);
@@ -254,6 +281,41 @@ function WalkForwardSection() {
       return next;
     });
   }, []);
+
+  const handleApply = useCallback(
+    async (strategyId: string, params: WalkForwardRecommendedParams) => {
+      setPendingApply(null);
+      setError(null);
+      setApplyingId(strategyId);
+      try {
+        const updated = await applyWalkForwardParams(strategyId, params);
+        setResult((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            results: prev.results.map((r) =>
+              r.strategyId === strategyId
+                ? {
+                    ...r,
+                    currentParams: {
+                      stopLossPct: updated.stopLossPct,
+                      takeProfitPct: updated.takeProfitPct,
+                      trailingStopPct: updated.trailingStopPct,
+                    },
+                  }
+                : r
+            ),
+          };
+        });
+        onStrategyRiskApplied?.(strategyId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "推奨値の適用に失敗しました");
+      } finally {
+        setApplyingId(null);
+      }
+    },
+    [onStrategyRiskApplied]
+  );
 
   return (
     <Stack gap={4}>
@@ -308,10 +370,17 @@ function WalkForwardSection() {
         result.results.map((r) => {
           const isOpen = expanded.has(r.strategyId);
           const agg = r.summary.aggregate;
+          const recommended = r.summary.recommendedParams;
+          const matchesCurrent =
+            recommended !== null &&
+            recommended.stopLossPct === r.currentParams.stopLossPct &&
+            recommended.takeProfitPct === r.currentParams.takeProfitPct &&
+            recommended.trailingStopPct === r.currentParams.trailingStopPct;
+          const isApplying = applyingId === r.strategyId;
           return (
             <Box key={r.strategyId} borderWidth="1px" borderColor="border.grid" bg="bg.surfaceRaised" p={3}>
               <Stack gap={3}>
-                <Stack direction="row" justify="space-between" align="flex-start" flexWrap="wrap" gap={2}>
+                <Stack direction="row" justify="space-between" align="flex-start" flexWrap="wrap" gap={3}>
                   <Stack gap={0.5}>
                     <Text fontFamily="heading" fontSize="13px" fontWeight="700" color="text.primary">
                       {r.strategyName}
@@ -320,20 +389,49 @@ function WalkForwardSection() {
                       {r.pair} / {r.timeframe} / {r.summary.windowCount}ウィンドウ
                     </Text>
                   </Stack>
-                  <Stack gap={0.5} align="flex-end">
-                    <Text
-                      fontFamily="mono"
-                      fontSize="10px"
-                      color="text.disabled"
-                      textTransform="uppercase"
-                      letterSpacing="0.08em"
-                    >
-                      現在の設定 (SL/TP/TS)
-                    </Text>
-                    <Text fontFamily="mono" fontSize="12px" color="text.primary">
-                      {formatPct(r.currentParams.stopLossPct)} / {formatPct(r.currentParams.takeProfitPct)} /{" "}
-                      {formatPct(r.currentParams.trailingStopPct)}
-                    </Text>
+                  <Stack direction="row" gap={4} align="flex-end" flexWrap="wrap">
+                    <Stack gap={0.5} align="flex-end">
+                      <Text
+                        fontFamily="mono"
+                        fontSize="10px"
+                        color="text.disabled"
+                        textTransform="uppercase"
+                        letterSpacing="0.08em"
+                      >
+                        現在の設定 (SL/TP/TS)
+                      </Text>
+                      <Text fontFamily="mono" fontSize="12px" color="text.primary">
+                        {formatPct(r.currentParams.stopLossPct)} / {formatPct(r.currentParams.takeProfitPct)} /{" "}
+                        {formatPct(r.currentParams.trailingStopPct)}
+                      </Text>
+                    </Stack>
+                    <Stack gap={0.5} align="flex-end">
+                      <Text
+                        fontFamily="mono"
+                        fontSize="10px"
+                        color="text.disabled"
+                        textTransform="uppercase"
+                        letterSpacing="0.08em"
+                      >
+                        推奨値 (Recommended)
+                      </Text>
+                      <Text fontFamily="mono" fontSize="12px" color="signal.cyan">
+                        {recommended === null
+                          ? "--"
+                          : `${formatPct(recommended.stopLossPct)} / ${formatPct(recommended.takeProfitPct)} / ${formatPct(recommended.trailingStopPct)}`}
+                      </Text>
+                      <CyberButton
+                        variant="primary"
+                        size="sm"
+                        disabled={recommended === null || matchesCurrent || isApplying}
+                        onClick={() =>
+                          recommended &&
+                          setPendingApply({ strategyId: r.strategyId, strategyName: r.strategyName, params: recommended })
+                        }
+                      >
+                        {isApplying ? "Applying..." : "推奨値を適用"}
+                      </CyberButton>
+                    </Stack>
                   </Stack>
                 </Stack>
 
@@ -423,6 +521,24 @@ function WalkForwardSection() {
             </Box>
           );
         })}
+
+      <ConfirmDialog
+        open={pendingApply !== null}
+        title="推奨値を適用"
+        description={
+          pendingApply
+            ? `戦略 "${pendingApply.strategyName}" のライブリスク設定を、推奨値` +
+              `(SL ${formatPct(pendingApply.params.stopLossPct)} / TP ${formatPct(pendingApply.params.takeProfitPct)} / ` +
+              `TS ${formatPct(pendingApply.params.trailingStopPct)})に即座に置き換えます。` +
+              `この戦略が稼働中の場合、次のtickから新しい設定で取引されます` +
+              `(すでにオープン中のポジションの損切り/利確/トレーリング設定は変更されません)。`
+            : ""
+        }
+        confirmLabel="適用する"
+        tone="cyan"
+        onConfirm={() => pendingApply && handleApply(pendingApply.strategyId, pendingApply.params)}
+        onCancel={() => setPendingApply(null)}
+      />
     </Stack>
   );
 }

@@ -163,9 +163,12 @@ function StrategyEditor() {
 
   const refreshList = useCallback(async () => {
     try {
-      setStrategies(await fetchStrategies());
+      const rows = await fetchStrategies();
+      setStrategies(rows);
+      return rows;
     } catch {
       setMessage({ text: "戦略一覧の取得に失敗しました。サーバーは起動していますか?", tone: "red" });
+      return null;
     }
   }, []);
 
@@ -322,6 +325,20 @@ function StrategyEditor() {
     setTimeframe(DEFAULT_CANDLE_TIMEFRAME);
     setRiskForm(EMPTY_RISK_FORM);
   }, [setNodes, setEdges]);
+
+  // Walk-ForwardパネルからBacktestPanel経由で推奨値が適用された後に呼ばれる。一覧を再取得し、
+  // 適用対象が現在エディタで開いている戦略と同じであればriskFormもサーバー側の最新値へ再同期する
+  // (適用直後に古いフォーム値のままSaveして上書きしてしまうのを防ぐため)
+  const handleStrategyRiskApplied = useCallback(
+    async (strategyId: string) => {
+      const rows = await refreshList();
+      if (rows && selectedId === strategyId) {
+        const strategy = rows.find((s) => s.id === strategyId);
+        if (strategy) setRiskForm(riskFormFromStrategy(strategy));
+      }
+    },
+    [refreshList, selectedId]
+  );
 
   const handleToggleActive = useCallback(
     async (strategy: Strategy) => {
@@ -653,6 +670,7 @@ function StrategyEditor() {
               timeframe={timeframe}
               riskForm={riskForm}
               maxPositionJpy={maxPositionJpy}
+              onStrategyRiskApplied={handleStrategyRiskApplied}
             />
           </CyberPanel>
         </Stack>

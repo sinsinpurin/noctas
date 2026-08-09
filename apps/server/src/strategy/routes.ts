@@ -402,6 +402,49 @@ export async function strategyRoutes(app: FastifyInstance) {
     }
   );
 
+  // ウォークフォワード検証結果のrecommendedParamsを戦略のライブリスク設定へ反映する。
+  // 稼働中戦略のstopLossPct/takeProfitPct/trailingStopPctはbotEngine/paperTradingEngineが
+  // 毎tick参照するため、適用は即座に効く(オープン済みPositionのSL/TP/TSスナップショットは対象外)。
+  // クライアントから来た数値をそのまま信頼せず、PUT /api/strategies/:idと同じvalidateRiskSettingsで再検証する。
+  app.post<{
+    Params: { id: string };
+    Body: { stopLossPct?: number; takeProfitPct?: number; trailingStopPct?: number | null };
+  }>("/api/strategies/:id/apply-walk-forward-params", async (request, reply) => {
+    const { id } = request.params;
+    const { stopLossPct, takeProfitPct, trailingStopPct } = request.body ?? {};
+
+    if (
+      typeof stopLossPct !== "number" ||
+      typeof takeProfitPct !== "number" ||
+      (trailingStopPct !== null && typeof trailingStopPct !== "number")
+    ) {
+      return reply.status(400).send({
+        error: "stopLossPct・takeProfitPctは数値、trailingStopPctは数値またはnullで指定してください",
+      });
+    }
+
+    const riskBody: StrategyBody = { stopLossPct, takeProfitPct, trailingStopPct };
+    const riskError = validateRiskSettings(riskBody);
+    if (riskError) {
+      return reply.status(400).send({ error: riskError });
+    }
+
+    const existing = await prisma.strategy.findUnique({ where: { id } });
+    if (!existing) {
+      return reply.status(404).send({ error: "指定された戦略が見つかりません" });
+    }
+
+    const row = await prisma.strategy.update({
+      where: { id },
+      data: riskSettingsData(riskBody),
+    });
+
+    await reloadActiveStrategies();
+    const dto = toStrategyDto(row);
+    broadcast({ type: "strategy_update", payload: dto });
+    return dto;
+  });
+
   // Bot Blueprintの「Position」ノードのライブ値表示・エディタのライブプレビュー用
   app.get<{ Params: { id: string } }>(
     "/api/strategies/:id/open-positions",

@@ -8,10 +8,19 @@ import type { CandleBucket } from "./botEngine";
 // ai/*.ts) reaches "../db/prisma" at module scope; mock it here purely to avoid constructing a
 // real PrismaClient during the test run (matches the pattern in historicalCandleStore.test.ts).
 const strategyFindMany = vi.fn();
+const strategyFindUnique = vi.fn();
+const strategyUpdate = vi.fn();
 vi.mock("../db/prisma", () => ({
-  prisma: { strategy: { findMany: (...args: unknown[]) => strategyFindMany(...args) } },
+  prisma: {
+    strategy: {
+      findMany: (...args: unknown[]) => strategyFindMany(...args),
+      findUnique: (...args: unknown[]) => strategyFindUnique(...args),
+      update: (...args: unknown[]) => strategyUpdate(...args),
+    },
+  },
 }));
-vi.mock("../ws/relay", () => ({ broadcast: vi.fn() }));
+const broadcast = vi.fn();
+vi.mock("../ws/relay", () => ({ broadcast: (...args: unknown[]) => broadcast(...args) }));
 vi.mock("../ai/strategyGenerator", () => ({ generateStrategyFromPrompt: vi.fn() }));
 vi.mock("../ai/anthropicClient", () => ({ getAnthropicApiKey: vi.fn(() => "test-key") }));
 
@@ -84,6 +93,7 @@ const sufficientSummary: WalkForwardSummary = {
     outOfSampleTrades: 1,
     consistencyRatio: 1,
   },
+  recommendedParams: { stopLossPct: 2, takeProfitPct: 4, trailingStopPct: null },
 };
 
 const insufficientSummary: WalkForwardSummary = {
@@ -98,6 +108,7 @@ const insufficientSummary: WalkForwardSummary = {
     outOfSampleTrades: 0,
     consistencyRatio: null,
   },
+  recommendedParams: null,
 };
 
 async function buildApp() {
@@ -362,6 +373,113 @@ describe("POST /api/strategies/walk-forward", () => {
         expect.any(Array),
         6
       );
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("POST /api/strategies/:id/apply-walk-forward-params", () => {
+  beforeEach(() => {
+    strategyFindUnique.mockReset();
+    strategyUpdate.mockReset();
+    reloadActiveStrategies.mockReset();
+    broadcast.mockReset();
+  });
+
+  const validBody = { stopLossPct: 2, takeProfitPct: 4, trailingStopPct: null };
+
+  it("re-validates with validateRiskSettings, updates the strategy, reloads active strategies, and broadcasts", async () => {
+    strategyFindUnique.mockResolvedValue(
+      strategyRow({ id: "s1", createdAt: new Date(), updatedAt: new Date() })
+    );
+    strategyUpdate.mockResolvedValue(
+      strategyRow({
+        id: "s1",
+        stopLossPct: 2,
+        takeProfitPct: 4,
+        trailingStopPct: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+    );
+
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/strategies/s1/apply-walk-forward-params",
+        payload: validBody,
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.stopLossPct).toBe(2);
+      expect(body.takeProfitPct).toBe(4);
+      expect(body.trailingStopPct).toBeNull();
+      expect(strategyUpdate).toHaveBeenCalledWith({
+        where: { id: "s1" },
+        data: { stopLossPct: 2, takeProfitPct: 4, trailingStopPct: null },
+      });
+      expect(reloadActiveStrategies).toHaveBeenCalledTimes(1);
+      expect(broadcast).toHaveBeenCalledWith({
+        type: "strategy_update",
+        payload: expect.objectContaining({ id: "s1" }),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 404 and never updates when the strategy does not exist", async () => {
+    strategyFindUnique.mockResolvedValue(null);
+
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/strategies/missing/apply-walk-forward-params",
+        payload: validBody,
+      });
+
+      expect(res.statusCode).toBe(404);
+      expect(strategyUpdate).not.toHaveBeenCalled();
+      expect(reloadActiveStrategies).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 via validateRiskSettings for an invalid stopLossPct, without touching the DB", async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/strategies/s1/apply-walk-forward-params",
+        payload: { stopLossPct: 0, takeProfitPct: 4, trailingStopPct: null },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = res.json();
+      expect(body.error).toContain("stopLossPct");
+      expect(strategyFindUnique).not.toHaveBeenCalled();
+      expect(strategyUpdate).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("returns 400 when a required field is missing or the wrong type", async () => {
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/strategies/s1/apply-walk-forward-params",
+        payload: { stopLossPct: 2, takeProfitPct: 4 },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(strategyUpdate).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
