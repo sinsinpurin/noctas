@@ -437,6 +437,66 @@ describe("runBacktest / volume node", () => {
   });
 });
 
+describe("runBacktest / time_filter node", () => {
+  // Maps a JST clock hour to a UNIX epoch second (UTC) whose JST hour equals it, mirroring
+  // the (hourUTC + 9) % 24 conversion done inside evaluateGraph's time_filter case.
+  function tsForJstHour(hour: number): number {
+    return 86_400 + (((hour - 9 + 24) % 24) * 3600);
+  }
+
+  /** price > 50 AND time_filter(2-6時 除外) -> buy. No sell node; SL/TP disabled in the request. */
+  function timeFilteredBuyGraph(): StrategyGraph {
+    return {
+      nodes: [
+        { id: "price", type: "price", params: {}, position: { x: 0, y: 0 } },
+        { id: "const50", type: "constant", params: { value: 50 }, position: { x: 0, y: 0 } },
+        { id: "gt50", type: "compare", params: { op: "gt" }, position: { x: 0, y: 0 } },
+        {
+          id: "tf",
+          type: "time_filter",
+          params: { excludeStartHour: 2, excludeEndHour: 6 },
+          position: { x: 0, y: 0 },
+        },
+        { id: "and1", type: "logic", params: { op: "and" }, position: { x: 0, y: 0 } },
+        { id: "buy1", type: "buy", params: {}, position: { x: 0, y: 0 } },
+      ],
+      edges: [
+        { id: "e1", source: "price", target: "gt50", targetHandle: "a" },
+        { id: "e2", source: "const50", target: "gt50", targetHandle: "b" },
+        { id: "e3", source: "gt50", target: "and1", targetHandle: "a" },
+        { id: "e4", source: "tf", target: "and1", targetHandle: "b" },
+        { id: "e5", source: "and1", target: "buy1", targetHandle: "condition" },
+      ],
+    };
+  }
+
+  it("only opens on the tick the excluded window ends, not on the earlier tick inside it (AND rises even though price alone had already crossed)", () => {
+    getCandlesForTimeframe.mockReturnValue([
+      candle(0, 0),
+      candle(tsForJstHour(3), 100), // inside excluded window -> no buy despite price > 50
+      candle(tsForJstHour(10), 100), // outside excluded window -> buy fires here (edge on the AND output)
+      // +5% take-profit clears via this candle's high, closing the position so we can inspect openedAt
+      candle(tsForJstHour(11), 100, { high: 110, low: 99 }),
+    ]);
+
+    const result = runBacktest(
+      baseRequest({
+        graph: timeFilteredBuyGraph(),
+        positionSizeJpy: 10_000,
+        stopLossPct: 50,
+        takeProfitPct: 5,
+        trailingStopPct: null,
+      })
+    );
+
+    // if the buy had fired on the earlier (excluded-hour) tick instead, openedAt would be
+    // tsForJstHour(3) * 1000 - asserting the outside-hour tick proves the excluded-hour tick was blocked
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].openedAt).toBe(tsForJstHour(10) * 1000);
+    expect(result.trades[0].closeReason).toBe("take_profit");
+  });
+});
+
 describe("runBacktest / maxOpenPositions caps concurrent simulated positions", () => {
   it("blocks a second buy edge while at the cap, so a later take-profit only closes the one allowed position", () => {
     getCandlesForTimeframe.mockReturnValue([

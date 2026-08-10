@@ -220,9 +220,11 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
 
   const closes: number[] = [];
   const volumes: number[] = [];
+  const timestamps: number[] = [];
   for (const candle of candles) {
     closes.push(candle.close);
     volumes.push(candle.volume);
+    timestamps.push(candle.time);
 
     // 1) 出口条件(SL/TP/トレーリング)の判定を先に行う(botEngine.onTickと同様、checkExits相当を先に評価する)
     for (let i = openPositions.length - 1; i >= 0; i -= 1) {
@@ -239,6 +241,7 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
       hasOpenPosition: openPositions.length > 0,
       aiJudgment: null,
       volumes,
+      timestamps,
     });
 
     if (evaluation.errors.length > 0) {

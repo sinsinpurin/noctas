@@ -75,6 +75,111 @@ describe("evaluateGraph / volume node", () => {
   });
 });
 
+describe("evaluateGraph / time_filter node", () => {
+  function buildGraph(excludeStartHour: number, excludeEndHour: number): StrategyGraph {
+    return {
+      nodes: [
+        node("tf", "time_filter", { excludeStartHour, excludeEndHour }),
+        node("buy1", "buy"),
+      ],
+      edges: [edge("tf", "buy1", "condition")],
+    };
+  }
+
+  // JST hour H corresponds to UTC epoch seconds (H - 9) * 3600, mod 86400 (using day 1 to stay positive)
+  function tsForJstHour(hour: number): number {
+    return 86400 + ((hour - 9 + 24) % 24) * 3600;
+  }
+
+  it("falls back to true (permissive) when timestamps is not supplied", () => {
+    const result = evaluateGraph(buildGraph(2, 6), [1, 2], { collectValues: true });
+    expect(result.nodeValues.tf).toBe(true);
+  });
+
+  it("falls back to true (permissive) when timestamps length does not match closes", () => {
+    const result = evaluateGraph(buildGraph(2, 6), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(3)],
+    });
+    expect(result.nodeValues.tf).toBe(true);
+  });
+
+  it("plain (non-wrapping) window: excludes hours in [start, end) and allows the rest", () => {
+    const inside = evaluateGraph(buildGraph(2, 6), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(1), tsForJstHour(3)],
+    });
+    expect(inside.nodeValues.tf).toBe(false);
+
+    const outside = evaluateGraph(buildGraph(2, 6), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(1), tsForJstHour(10)],
+    });
+    expect(outside.nodeValues.tf).toBe(true);
+  });
+
+  it("wraparound window (start > end): excludes hours >= start OR < end", () => {
+    const insideLate = evaluateGraph(buildGraph(22, 6), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(1), tsForJstHour(23)],
+    });
+    expect(insideLate.nodeValues.tf).toBe(false);
+
+    const insideEarly = evaluateGraph(buildGraph(22, 6), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(1), tsForJstHour(2)],
+    });
+    expect(insideEarly.nodeValues.tf).toBe(false);
+
+    const outside = evaluateGraph(buildGraph(22, 6), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(1), tsForJstHour(12)],
+    });
+    expect(outside.nodeValues.tf).toBe(true);
+  });
+
+  it("start === end: empty window, never excludes", () => {
+    const result = evaluateGraph(buildGraph(5, 5), [1, 2], {
+      collectValues: true,
+      timestamps: [tsForJstHour(1), tsForJstHour(5)],
+    });
+    expect(result.nodeValues.tf).toBe(true);
+  });
+
+  it("integration: buy only fires outside the excluded hours when AND'ed with a price condition", () => {
+    const graph: StrategyGraph = {
+      nodes: [
+        node("price1", "price"),
+        node("c", "constant", { value: 3 }),
+        node("cmp", "compare", { op: "gt" }),
+        node("tf", "time_filter", { excludeStartHour: 2, excludeEndHour: 6 }),
+        node("logic1", "logic", { op: "and" }),
+        node("buy1", "buy"),
+      ],
+      edges: [
+        edge("price1", "cmp", "a"),
+        edge("c", "cmp", "b"),
+        edge("cmp", "logic1", "a"),
+        edge("tf", "logic1", "b"),
+        edge("logic1", "buy1", "condition"),
+      ],
+    };
+
+    // price rises above the threshold only on the last tick, but that tick falls inside the
+    // excluded hour range (03:00 JST) -> buy must not fire
+    const blocked = evaluateGraph(graph, [1, 1, 5], {
+      timestamps: [tsForJstHour(1), tsForJstHour(1), tsForJstHour(3)],
+    });
+    expect(blocked.buy.current).toBe(false);
+
+    // same price pattern, but the rising-edge tick falls outside the excluded hours -> buy fires
+    const allowed = evaluateGraph(graph, [1, 1, 5], {
+      timestamps: [tsForJstHour(1), tsForJstHour(1), tsForJstHour(10)],
+    });
+    expect(allowed.buy).toEqual({ current: true, previous: false });
+  });
+});
+
 describe("evaluateGraph / compare node", () => {
   function buildGraph(op: "gt" | "lt" | "gte" | "lte", value: number): StrategyGraph {
     return {

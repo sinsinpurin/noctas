@@ -16,18 +16,19 @@ interface CandlesResponse {
 export interface LiveCandles {
   closes: number[];
   volumes: number[];
+  times: number[];
 }
 
 /**
- * サーバー(Botエンジン)が保持する1分足終値・出来高履歴をポーリングで取得する。
+ * サーバー(Botエンジン)が保持する1分足終値・出来高・時刻履歴をポーリングで取得する。
  * エディタ上のノードを「Botが実際に見ているのと同じデータ」で評価するために使う。
  */
 export function useLiveCandles(pair?: string, timeframe?: CandleTimeframe): LiveCandles {
-  const [candles, setCandles] = useState<LiveCandles>({ closes: [], volumes: [] });
+  const [candles, setCandles] = useState<LiveCandles>({ closes: [], volumes: [], times: [] });
 
   useEffect(() => {
     let cancelled = false;
-    setCandles({ closes: [], volumes: [] });
+    setCandles({ closes: [], volumes: [], times: [] });
 
     const load = async () => {
       try {
@@ -42,6 +43,7 @@ export function useLiveCandles(pair?: string, timeframe?: CandleTimeframe): Live
           setCandles({
             closes: data.closes,
             volumes: Array.isArray(data.volumes) ? data.volumes : [],
+            times: Array.isArray(data.times) ? data.times : [],
           });
         }
       } catch {

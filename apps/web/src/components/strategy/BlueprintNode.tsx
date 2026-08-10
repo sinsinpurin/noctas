@@ -78,6 +78,7 @@ function ParamInput({
       style={inputCss}
       type="number"
       min={field.min}
+      max={field.max}
       step={field.step}
       value={typeof value === "number" ? value : Number(value ?? 0)}
       onChange={(e) =>
