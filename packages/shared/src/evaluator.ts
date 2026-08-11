@@ -85,6 +85,13 @@ export interface EvaluateOptions {
    * volumeノードは常にNaN(未計算)を返す。
    */
   volumes?: number[];
+  /**
+   * time_filterノード用。closesと同じ長さのUNIXエポック秒配列(UTC)。未指定または長さ不一致の場合、
+   * time_filterノードは常にtrue(制限なし)を返す。volumeノードのNaNフォールバックと異なり、
+   * このノードの出力はエントリー条件へ直結されるゲートなので、データが無いことを理由に
+   * 取引を止めてしまわないよう「許可」側へフォールバックする。
+   */
+  timestamps?: number[];
 }
 
 export function evaluateGraph(
@@ -225,6 +232,31 @@ export function evaluateGraph(
         // まだ真のままだと(このノードの出力が過去分も含めて真に変わるため)エッジが立たず
         // 再エントリーが1tick分だけ抑止される。クロス系条件と組み合わせるのが最も素直に働く
         result = new Array<boolean>(length).fill(expect === "holding" ? holding : !holding);
+        break;
+      }
+
+      case "time_filter": {
+        const timestamps =
+          options.timestamps && options.timestamps.length === length ? options.timestamps : null;
+        const excludeStartHour = numberParam(node, "excludeStartHour", 0);
+        const excludeEndHour = numberParam(node, "excludeEndHour", 0);
+        result = new Array<boolean>(length).fill(true).map((_, i) => {
+          if (!timestamps) return true;
+          const t = timestamps[i];
+          // 負のtにも対応する安全な剰余(JSの%は被除数が負だと結果も負になるため)
+          const secOfDay = ((t % 86400) + 86400) % 86400;
+          const hourUTC = Math.floor(secOfDay / 3600);
+          const jstHour = (hourUTC + 9) % 24;
+          let insideExcludedWindow: boolean;
+          if (excludeStartHour === excludeEndHour) {
+            insideExcludedWindow = false;
+          } else if (excludeStartHour < excludeEndHour) {
+            insideExcludedWindow = jstHour >= excludeStartHour && jstHour < excludeEndHour;
+          } else {
+            insideExcludedWindow = jstHour >= excludeStartHour || jstHour < excludeEndHour;
+          }
+          return !insideExcludedWindow;
+        });
         break;
       }
 

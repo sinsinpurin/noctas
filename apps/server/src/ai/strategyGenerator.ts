@@ -24,6 +24,7 @@ const NODE_SPEC: Record<
   volume: { inputs: {}, output: "number" },
   constant: { inputs: {}, output: "number" },
   position: { inputs: {}, output: "bool" },
+  time_filter: { inputs: {}, output: "bool" },
   sma: { inputs: { in: "number" }, output: "number" },
   ema: { inputs: { in: "number" }, output: "number" },
   rsi: { inputs: { in: "number" }, output: "number" },
@@ -63,6 +64,11 @@ const buildSystemPrompt = (pair: string, timeframe: CandleTimeframe) => `あな�
 - position: 入力なし → 出力 out(bool)。この戦略が${pairLabel(pair)}で未決済の建玉を持っているかを表す。
   params.state = "none"(建玉なしのとき真, 既定)|"holding"(建玉ありのとき真)。
   logic(and)でエントリー条件と組み合わせ、「建玉が無いときだけ買う」等のゲートに使う。
+- time_filter: 入力なし → 出力 out(bool)。現在の足の時刻(JST)が params.excludeStartHour〜params.excludeEndHour
+  (0-23の整数、開始を含み終了を含まない)の範囲の"外"にあるとき真になる(出力の意味は「取引してOK」)。
+  開始 > 終了の場合は日をまたぐ範囲として扱う(例: excludeStartHour=22, excludeEndHour=6 は22時〜翌6時を除外)。
+  開始 === 終了なら除外時間帯なし(常に真)。他のノードと違いNOTを挟まずlogic(and)で直接エントリー条件と
+  組み合わせられる(例: 「流動性の低い深夜帯を避けたい」という要望に使う)。
 - sma / ema: 入力 in(number, 未接続なら終値) → 出力 out(number)。params.period(1以上の整数)
 - rsi: 入力 in(number, 未接続なら終値) → 出力 out(number, 0-100)。params.period(2以上の整数, 通常14)
 - compare: 入力 a, b(number) → 出力 out(bool)。params.op = "gt"|"lt"|"gte"|"lte"(a op b)
@@ -116,6 +122,8 @@ const STRATEGY_TOOL = {
                 expect: { type: "string" as const, enum: ["buy", "sell"] },
                 minConfidence: { type: "number" as const },
                 state: { type: "string" as const, enum: ["none", "holding"] },
+                excludeStartHour: { type: "number" as const },
+                excludeEndHour: { type: "number" as const },
               },
             },
           },
@@ -240,6 +248,15 @@ function validateGraph(graph: StrategyGraph): string[] {
         errors.push(`position ノード(${node.id})のstateはnone/holdingのいずれかである必要があります`);
       }
     }
+    if (node.type === "time_filter") {
+      for (const key of ["excludeStartHour", "excludeEndHour"] as const) {
+        if (node.params[key] === undefined) continue;
+        const hour = Number(node.params[key]);
+        if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+          errors.push(`time_filter ノード(${node.id})の${key}は0〜23の整数である必要があります: ${node.params[key]}`);
+        }
+      }
+    }
     if (node.type === "ai_judgment") {
       const expect = node.params.expect;
       if (expect !== "buy" && expect !== "sell") {
@@ -260,14 +277,17 @@ function validateGraph(graph: StrategyGraph): string[] {
     // cross/compare条件が一度も成立せず、実質未検証のまま素通りしてしまうため)。
     const closes: number[] = [];
     const volumes: number[] = [];
+    const timestamps: number[] = [];
     let price = 10_000_000;
     for (let i = 0; i < 300; i++) {
       price *= 1 + Math.sin(i / 7) * 0.001;
       closes.push(price);
       const isSpike = i % 50 === 25;
       volumes.push(isSpike ? 50 : 10);
+      // time_filterノードを実際にJST時刻分岐させて検証できるよう、1本1時間刻みで丸1日以上を周回させる
+      timestamps.push(i * 3600);
     }
-    errors.push(...evaluateGraph(graph, closes, { volumes }).errors);
+    errors.push(...evaluateGraph(graph, closes, { volumes, timestamps }).errors);
   }
 
   return errors;

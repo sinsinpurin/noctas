@@ -130,7 +130,8 @@ export interface AiUsageStats {
 
 /**
  * 戦略グラフのノード種別。
- * - source: price(終値シリーズ), volume(出来高シリーズ), constant(定数), position(建玉の保有状況)
+ * - source: price(終値シリーズ), volume(出来高シリーズ), constant(定数), position(建玉の保有状況),
+ *   time_filter(現在の足のJST時刻が除外時間帯の外にあるか)
  * - indicator: sma / ema / rsi(数値シリーズ → 数値シリーズ)
  * - condition: compare(大小比較), cross(クロス判定)
  * - logic: and / or / not(真偽シリーズの合成)
@@ -142,6 +143,7 @@ export type StrategyNodeType =
   | "volume"
   | "constant"
   | "position"
+  | "time_filter"
   | "sma"
   | "ema"
   | "rsi"

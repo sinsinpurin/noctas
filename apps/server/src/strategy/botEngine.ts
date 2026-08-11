@@ -478,6 +478,7 @@ export async function onTick(pair: string, price: number, timestampMs: number, v
     };
     const closesFor = (tf: CandleTimeframe) => candlesFor(tf).map((candle) => candle.close);
     const volumesFor = (tf: CandleTimeframe) => candlesFor(tf).map((candle) => candle.volume);
+    const timestampsFor = (tf: CandleTimeframe) => candlesFor(tf).map((candle) => candle.time);
 
     // positionノードを使う戦略がある場合のみ、tickあたり1回だけ建玉数をまとめて取得する
     // (tickは高頻度なので、無条件に問い合わせるとDBラウンドトリップが増える)
@@ -507,6 +508,7 @@ export async function onTick(pair: string, price: number, timestampMs: number, v
         aiJudgment: judgment && { action: judgment.action, confidence: judgment.confidence, isFresh },
         hasOpenPosition: (openPositionCounts.get(strategy.id) ?? 0) > 0,
         volumes: volumesFor(strategy.timeframe),
+        timestamps: timestampsFor(strategy.timeframe),
       });
       if (judgment) lastSeenJudgmentAt.set(strategy.id, judgment.updatedAt);
 

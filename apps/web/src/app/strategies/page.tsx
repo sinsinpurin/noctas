@@ -362,7 +362,7 @@ function StrategyEditor() {
   const preview = useMemo(() => describeGraph(currentGraph), [currentGraph]);
 
   // 現在の相場データ(選択ペア・時間足の履歴)で各ノードを評価し、◯/✕・数値をライブ表示する
-  const { closes, volumes } = useLiveCandles(pair, timeframe);
+  const { closes, volumes, times } = useLiveCandles(pair, timeframe);
   // AI Judgmentノードのライブプレビュー用(このペアの最新AI判断キャッシュを15秒間隔で取得)
   const aiJudgment = useAiJudgment(pair);
   // Positionノードのライブプレビュー用(未保存のキャンバスは建玉なし=falseとして評価する)
@@ -379,8 +379,9 @@ function StrategyEditor() {
       },
       hasOpenPosition,
       volumes,
+      timestamps: times,
     }).nodeValues;
-  }, [nodes, edges, closes, volumes, aiJudgment, hasOpenPosition]);
+  }, [nodes, edges, closes, volumes, times, aiJudgment, hasOpenPosition]);
 
   const handleLoadTemplate = useCallback(
     (template: StrategyTemplate) => {

@@ -24,7 +24,7 @@ export interface NodeDef {
 }
 
 export type ParamField =
-  | { key: string; label: string; kind: "number"; min?: number; step?: number }
+  | { key: string; label: string; kind: "number"; min?: number; max?: number; step?: number }
   | { key: string; label: string; kind: "select"; options: { value: string; label: string }[] };
 
 /** カテゴリごとのシグナルカラー(デザインシステムのネオン運用に準拠) */
@@ -92,6 +92,20 @@ export const NODE_CATALOG: NodeDef[] = [
           { value: "holding", label: "建玉あり" },
         ],
       },
+    ],
+  },
+  {
+    type: "time_filter",
+    label: "Time Filter",
+    category: "source",
+    description:
+      "現在の足の時刻(JST)が指定した時間帯の外にあるとき真を返す。深夜・薄商いの時間帯を避けたいときに、logic(and)でエントリー条件と直接組み合わせる(NOT不要)",
+    inputs: [],
+    outputs: [{ id: "out", label: "cond", kind: "bool" }],
+    defaultParams: { excludeStartHour: 2, excludeEndHour: 6 },
+    paramFields: [
+      { key: "excludeStartHour", label: "除外開始時(JST)", kind: "number", min: 0, max: 23, step: 1 },
+      { key: "excludeEndHour", label: "除外終了時(JST)", kind: "number", min: 0, max: 23, step: 1 },
     ],
   },
   {

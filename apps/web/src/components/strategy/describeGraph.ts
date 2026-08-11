@@ -48,6 +48,11 @@ export function describeGraph(graph: StrategyGraph): GraphDescription {
           return "終値";
         case "volume":
           return "出来高";
+        case "time_filter": {
+          const excludeStartHour = formatValue(node.params.excludeStartHour ?? 2);
+          const excludeEndHour = formatValue(node.params.excludeEndHour ?? 6);
+          return `${excludeStartHour}時〜${excludeEndHour}時(JST)を除く時間帯`;
+        }
         case "constant":
           return formatValue(node.params.value);
         case "position":
