@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BrowserWindow, dialog, shell } from "electron";
+import { app, BrowserWindow, dialog, shell, type Tray } from "electron";
 import { guardServerPort } from "./portGuard";
 import {
   startServerProcess,
@@ -17,6 +17,7 @@ import { getDatabaseUrl } from "./paths";
 import { ensureUserEnvFile, readUserEnv } from "./userEnv";
 import { runServerMigrations } from "./serverMigrate";
 import { initAutoUpdater } from "./updater";
+import { createTray, notifyBackgroundOnce } from "./tray";
 
 const WEB_PORT = Number(process.env.NOCTAS_DESKTOP_WEB_PORT ?? 3000);
 // Phase 2 で静的書き出しに切り替えた際に next dev を誤って起動しないよう、
@@ -31,6 +32,7 @@ const RENDERER_URL =
 const USES_APP_PROTOCOL = RENDERER_URL === APP_RENDERER_URL;
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let quitting = false;
 let loadRetried = false;
 
@@ -51,6 +53,15 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  // ウィンドウを閉じてもサーバー/Bot戦略エンジンは動き続けさせるため、実際の破棄はせずhideする。
+  // 明示的な終了 (トレイの「終了」) 時のみ quitting が立ち、通常どおり閉じられる。
+  mainWindow.on("close", (event) => {
+    if (quitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+    if (tray) notifyBackgroundOnce(tray);
   });
 
   mainWindow.on("closed", () => {
@@ -87,6 +98,8 @@ if (!app.requestSingleInstanceLock()) {
   app.on("second-instance", () => {
     if (!mainWindow) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
+    // トレイに格納 (hide) されている場合は minimized ではないため、別途 show() が必要。
+    mainWindow.show();
     mainWindow.focus();
   });
 
@@ -161,10 +174,18 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     initAutoUpdater(createWindow(), stopAllProcesses);
-  });
-
-  app.on("window-all-closed", () => {
-    app.quit();
+    tray = createTray({
+      showWindow: () => {
+        mainWindow?.show();
+        mainWindow?.focus();
+      },
+      // quitting は before-quit ハンドラが一度だけ立てる (グレースフル停止 →
+      // 再度の app.quit() で実際に終了、という二段構え)。ここで先に立てると
+      // before-quit のガードに即弾かれ、stopAllProcesses() が走らなくなる。
+      requestQuit: () => {
+        app.quit();
+      },
+    });
   });
 
   app.on("before-quit", (event) => {

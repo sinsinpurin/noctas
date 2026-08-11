@@ -32,6 +32,9 @@ export const SCHEMA_ENGINE_BIN = path.join(
 // asar 内に同梱される (electron-builder.yml の files に resources/**/* を含めている)。
 export const USER_ENV_TEMPLATE = path.join(__dirname, "..", "resources", "env.template");
 
+// システムトレイアイコン。上記と同じく resources/**/* でパッケージ実行時にも同梱される。
+export const TRAY_ICON_PATH = path.join(__dirname, "..", "resources", "tray-icon.ico");
+
 // userData は app.getName() から都度計算されるため、main.ts の app.setName("Noctas") より
 // 先にモジュールが評価されても正しい値になるよう、定数ではなく関数で公開する。
 export function getUserEnvPath(): string {
