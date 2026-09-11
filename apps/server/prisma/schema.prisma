@@ -91,6 +91,33 @@ model Strategy {
   stopLossPct      Float?
   takeProfitPct    Float?
   trailingStopPct  Float?
+
+  versions StrategyVersion[]
+}
+
+// 戦略を保存・変更した時点の完全な設定スナップショット。
+// 検証結果や将来の稼働注文を、後から編集されたStrategy本体と混同しないために使う。
+model StrategyVersion {
+  id               String   @id @default(cuid())
+  strategyId       String
+  version          Int
+  name             String
+  pair             String
+  timeframe        String
+  description      String
+  graph            String
+  isActive         Boolean
+  positionSizeJpy  Float?
+  maxOpenPositions Int?
+  stopLossPct      Float?
+  takeProfitPct    Float?
+  trailingStopPct  Float?
+  createdAt        DateTime @default(now())
+
+  strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  @@unique([strategyId, version])
+  @@index([strategyId, createdAt])
 }
 
 // アプリ設定のキーバリューストア(例: aiDecisionEnabled = "true")

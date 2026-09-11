@@ -41,6 +41,37 @@ function toStrategyDto(row: PrismaStrategy): Strategy {
   };
 }
 
+/** 保存時点の設定を不変スナップショットとして記録する。古いDB/テスト用モックに
+ * versionモデルが無い場合は戦略保存自体を妨げず、マイグレーション後に有効になる。 */
+async function createStrategyVersion(row: PrismaStrategy, version?: number): Promise<void> {
+  const client = prisma as typeof prisma & {
+    strategyVersion?: {
+      create(args: { data: Record<string, unknown> }): Promise<unknown>;
+      aggregate(args: unknown): Promise<{ _max: { version: number | null } }>;
+    };
+  };
+  if (!client.strategyVersion) return;
+  const nextVersion =
+    version ?? ((await client.strategyVersion.aggregate({ where: { strategyId: row.id }, _max: { version: true } }))._max.version ?? 0) + 1;
+  await client.strategyVersion.create({
+    data: {
+      strategyId: row.id,
+      version: nextVersion,
+      name: row.name,
+      pair: row.pair,
+      timeframe: row.timeframe,
+      description: row.description,
+      graph: row.graph,
+      isActive: row.isActive,
+      positionSizeJpy: row.positionSizeJpy,
+      maxOpenPositions: row.maxOpenPositions,
+      stopLossPct: row.stopLossPct,
+      takeProfitPct: row.takeProfitPct,
+      trailingStopPct: row.trailingStopPct,
+    },
+  });
+}
+
 export interface StrategyBody {
   name?: string;
   pair?: string;
@@ -374,6 +405,7 @@ export async function strategyRoutes(app: FastifyInstance) {
     });
 
     const dto = toStrategyDto(row);
+    await createStrategyVersion(row, 1);
     broadcast({ type: "strategy_update", payload: dto });
     return dto;
   });
@@ -416,12 +448,22 @@ export async function strategyRoutes(app: FastifyInstance) {
         },
       });
 
+      await createStrategyVersion(row);
       await reloadActiveStrategies();
       const dto = toStrategyDto(row);
       broadcast({ type: "strategy_update", payload: dto });
       return dto;
     }
   );
+
+  app.get<{ Params: { id: string } }>("/api/strategies/:id/versions", async (request, reply) => {
+    const { id } = request.params;
+    const existing = await prisma.strategy.findUnique({ where: { id } });
+    if (!existing) return reply.status(404).send({ error: "指定された戦略が見つかりません" });
+    const client = prisma as typeof prisma & { strategyVersion?: { findMany(args: unknown): Promise<unknown[]> } };
+    if (!client.strategyVersion) return [];
+    return client.strategyVersion.findMany({ where: { strategyId: id }, orderBy: { version: "desc" } });
+  });
 
   // ウォークフォワード検証結果のrecommendedParamsを戦略のライブリスク設定へ反映する。
   // 稼働中戦略のstopLossPct/takeProfitPct/trailingStopPctはbotEngine/paperTradingEngineが
@@ -463,6 +505,7 @@ export async function strategyRoutes(app: FastifyInstance) {
       data: riskSettingsData(riskBody),
     });
 
+    await createStrategyVersion(row);
     await reloadActiveStrategies();
     const dto = toStrategyDto(row);
     broadcast({ type: "strategy_update", payload: dto });
