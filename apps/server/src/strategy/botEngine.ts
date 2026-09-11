@@ -398,13 +398,26 @@ async function fireSignal(
       : await closeOldestPosition(pair, price, "bot_strategy", { strategyId: strategy.id });
 
   const executed = result.trade !== null;
-  const note = executed
+  let note = executed
     ? `${action.toUpperCase()} 条件が成立し、約定しました`
     : action === "buy"
       ? buyBlockedByBreaker
         ? "BUY 条件が成立しましたが、サーキットブレーカー発動中のため見送りました"
         : "BUY 条件が成立しましたが、リスク制約(ポジション数・残高)により見送りました"
       : "SELL 条件が成立しましたが、この戦略の決済対象ポジションがありません";
+
+  // bot_strategy理由のSELL(このfireSignal経由のSELLは常にbot_strategy)が、往復コスト
+  // (手数料+スリッページ)にも満たない含み益で決済してしまっていないか警告する。
+  // stop_loss/take_profit/trailing_stopはriskManager.ts側の検証済みロジックで別途決済されるため対象外
+  if (action === "sell" && executed && result.position && result.position.closePrice !== null) {
+    const { entryPrice, closePrice } = result.position;
+    const changePct = ((closePrice - entryPrice) / entryPrice) * 100;
+    if (changePct > 0 && changePct < config.fees.roundTripCostPct) {
+      const warning = `含み益(${changePct.toFixed(3)}%)が往復コスト(手数料+スリッページ = ${config.fees.roundTripCostPct}%)未満のまま決済しました。この戦略のSELL条件は手数料負けするタイミングで発火している可能性があります`;
+      console.warn(`[botEngine] ${strategy.name} (${pair}): ${warning}`);
+      note = `${note}(${warning})`;
+    }
+  }
 
   const signal: BotSignal = {
     id: randomUUID(),
@@ -522,6 +535,20 @@ export async function onTick(pair: string, price: number, timestampMs: number, v
       const shouldSell = evaluation.sell.current && !evaluation.sell.previous;
 
       if (!shouldBuy && !shouldSell) continue;
+
+      // 発火直前の最終確認として、DB上の直近シグナルでもクールダウンを再チェックする。
+      // 上のlastFiredAt(インメモリ)は開発サーバーの頻繁な再起動(tsx watch)で空になるため、
+      // 再起動直後に同一シグナルを二重発火しうる。ここは実際に発火する直前だけ通る分岐なので、
+      // 毎tickのDBラウンドトリップは発生しない(openPositionCountsのバッチ取得と同じ考え方)
+      const lastSignal = await prisma.botSignalLog.findFirst({
+        where: { strategyId: strategy.id },
+        orderBy: { triggeredAt: "desc" },
+        select: { triggeredAt: true },
+      });
+      if (lastSignal && Date.now() - lastSignal.triggeredAt.getTime() < cooldownMs) {
+        lastFiredAt.set(strategy.id, lastSignal.triggeredAt.getTime());
+        continue;
+      }
 
       lastFiredAt.set(strategy.id, Date.now());
 

@@ -133,6 +133,9 @@ model BotSignalLog {
   triggeredAt  DateTime
   executed     Boolean
   note         String
+
+  // botEngine.tsが発火直前のクールダウン最終確認(戦略ごとの直近シグナル取得)で使う
+  @@index([strategyId, triggeredAt])
 }
 
 model VirtualBalance {

@@ -179,6 +179,44 @@ describe("validateRiskSettings / takeProfitPct round-trip cost floor", () => {
   });
 });
 
+describe("validateRiskSettings / stop-loss:take-profit ratio (issue #1b)", () => {
+  it("rejects when both fields are present and takeProfitPct is below stopLossPct", () => {
+    const error = validateRiskSettings({ stopLossPct: 5, takeProfitPct: 2 });
+    expect(error).not.toBeNull();
+    expect(error).toContain("利確%");
+  });
+
+  it("accepts when both fields are present and takeProfitPct is at or above stopLossPct", () => {
+    expect(validateRiskSettings({ stopLossPct: 2, takeProfitPct: 2 })).toBeNull();
+    expect(validateRiskSettings({ stopLossPct: 2, takeProfitPct: 5 })).toBeNull();
+  });
+
+  it("accepts takeProfitPct: 0 (explicit 'no take profit') alongside stopLossPct without triggering the ratio check", () => {
+    expect(validateRiskSettings({ stopLossPct: 5, takeProfitPct: 0 })).toBeNull();
+  });
+
+  it("does not enforce the ratio when only one of the two fields is present (partial update)", () => {
+    // stopLossPct(5)より低いtakeProfitPctでも、リクエストにtakeProfitPctが含まれていなければ
+    // このチェックは発動しない(既存値との比較は対象外 — 意図的にスコープ外)
+    expect(validateRiskSettings({ stopLossPct: 5 })).toBeNull();
+    expect(validateRiskSettings({ takeProfitPct: 2 })).toBeNull();
+  });
+
+  it("skips the ratio check entirely when enforceRatio: false is passed (walk-forward apply path)", () => {
+    // ウォークフォワードのグリッドサーチはリスクリワード比の制約なしに最良のPnLを選ぶため、
+    // stopLossPct: 3 / takeProfitPct: 2 のような組み合わせが正当な推奨結果になり得る
+    expect(
+      validateRiskSettings({ stopLossPct: 3, takeProfitPct: 2 }, { enforceRatio: false })
+    ).toBeNull();
+  });
+
+  it("still enforces the ratio by default (enforceRatio omitted) for manual create/update requests", () => {
+    const error = validateRiskSettings({ stopLossPct: 3, takeProfitPct: 2 });
+    expect(error).not.toBeNull();
+    expect(error).toContain("利確%");
+  });
+});
+
 describe("validateRiskSettings / other fields unaffected", () => {
   it("still validates maxOpenPositions independently of the positionSizeJpy cap", () => {
     expect(validateRiskSettings({ maxOpenPositions: 0 })).not.toBeNull();
@@ -464,6 +502,45 @@ describe("POST /api/strategies/:id/apply-walk-forward-params", () => {
       expect(body.error).toContain("stopLossPct");
       expect(strategyFindUnique).not.toHaveBeenCalled();
       expect(strategyUpdate).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("succeeds even when takeProfitPct < stopLossPct (walk-forward recommendedParams bypass the ratio guard)", async () => {
+    // Regression test: validateRiskSettings's stop-loss:take-profit ratio guard must not apply
+    // here, since walkForwardEngine's DEFAULT_GRID search can legitimately recommend a wide
+    // stop + modest target combo (e.g. stopLossPct: 3, takeProfitPct: 2) based on backtested PnL.
+    strategyFindUnique.mockResolvedValue(
+      strategyRow({ id: "s1", createdAt: new Date(), updatedAt: new Date() })
+    );
+    strategyUpdate.mockResolvedValue(
+      strategyRow({
+        id: "s1",
+        stopLossPct: 3,
+        takeProfitPct: 2,
+        trailingStopPct: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+    );
+
+    const app = await buildApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/strategies/s1/apply-walk-forward-params",
+        payload: { stopLossPct: 3, takeProfitPct: 2, trailingStopPct: null },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.stopLossPct).toBe(3);
+      expect(body.takeProfitPct).toBe(2);
+      expect(strategyUpdate).toHaveBeenCalledWith({
+        where: { id: "s1" },
+        data: { stopLossPct: 3, takeProfitPct: 2, trailingStopPct: null },
+      });
     } finally {
       await app.close();
     }
