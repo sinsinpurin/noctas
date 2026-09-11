@@ -3,6 +3,7 @@ import {
   type BacktestRequest,
   type BacktestSummary,
   type BacktestTrade,
+  type BacktestExecutionMode,
   type PnlCurvePoint,
   type TradeReason,
 } from "@noctas/shared";
@@ -104,7 +105,10 @@ function checkPositionExit(
     trailingStopPct,
   });
   if (worstCase.reason && worstCase.triggerPrice !== null) {
-    return { reason: worstCase.reason, price: worstCase.triggerPrice };
+    // 始値でストップ価格を飛び越えた場合は、トリガー価格ではなく
+    // 実際に利用できる始値で約定させる(ギャップダウンを楽観視しない)。
+    const gapPrice = candle.open <= worstCase.triggerPrice ? candle.open : worstCase.triggerPrice;
+    return { reason: worstCase.reason, price: gapPrice };
   }
 
   // 高値側: stop_loss/trailing_stopは既に安値側で判定済みなので無効化し、take_profitだけ判定する
@@ -117,7 +121,9 @@ function checkPositionExit(
     trailingStopPct: null,
   });
   if (bestCase.reason && bestCase.triggerPrice !== null) {
-    return { reason: bestCase.reason, price: bestCase.triggerPrice };
+    // 利確側も始値で利確ラインを飛び越えた場合は始値で約定する。
+    const gapPrice = candle.open >= bestCase.triggerPrice ? candle.open : bestCase.triggerPrice;
+    return { reason: bestCase.reason, price: gapPrice };
   }
   return null;
 }
@@ -181,6 +187,7 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   const stopLossPct = request.stopLossPct ?? null;
   const takeProfitPct = request.takeProfitPct ?? null;
   const trailingStopPct = request.trailingStopPct ?? null;
+  const executionMode: BacktestExecutionMode = request.executionMode ?? "legacy_intrabar";
 
   const openPositions: OpenSimPosition[] = [];
   const trades: BacktestTrade[] = [];
@@ -202,6 +209,8 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   let liquidationMaxDrawdown = 0;
   let liquidationPeakForPct = initialBalanceJpy;
   const seenErrors = new Set<string>();
+  let pendingBuy = false;
+  let pendingSell = false;
 
   function recordClose(trade: BacktestTrade) {
     trades.push(trade);
@@ -267,6 +276,27 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
       continue;
     }
 
+    // 確定足シグナルを次足始値で執行するモード。保護決済はこの待ち行列より先に処理する。
+    if (executionMode === "closed_bar_next_tick") {
+      if (pendingSell) {
+        const pos = openPositions.shift();
+        if (pos) {
+          const trade = closeSimPosition(pos, candle.open, "bot_strategy", candle.time * 1000);
+          cashJpy += trade.closePrice * trade.amount - feeOf(trade.closePrice * trade.amount);
+          recordClose(trade);
+        }
+      } else if (pendingBuy && openPositions.length < maxOpenPositions) {
+        const pos = openSimPosition(candle.open, positionSizeJpy, candle.time * 1000);
+        const totalEntryCost = pos.entryPrice * pos.amount + pos.entryFee;
+        if (cashJpy >= totalEntryCost) {
+          cashJpy -= totalEntryCost;
+          openPositions.push(pos);
+        }
+      }
+      pendingBuy = false;
+      pendingSell = false;
+    }
+
     const evaluation = evaluateGraph(request.graph, closes, {
       hasOpenPosition: openPositions.length > 0,
       aiJudgment: null,
@@ -284,7 +314,10 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
     const shouldBuy = evaluation.buy.current && !evaluation.buy.previous;
 
     // buy/sellが同時成立した場合はbotEngineと同様、安全側に倒して売りのみ実行する
-    if (shouldSell) {
+    if (executionMode === "closed_bar_next_tick") {
+      pendingSell = shouldSell;
+      pendingBuy = !shouldSell && shouldBuy;
+    } else if (shouldSell) {
       const pos = openPositions.shift();
       if (pos) {
         const trade = closeSimPosition(pos, candle.close, "bot_strategy", candle.time * 1000);

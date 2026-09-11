@@ -550,3 +550,53 @@ describe("runBacktest / liquidation equity includes open positions", () => {
     expect(result.liquidationEquityCurve.at(-1)?.value).toBe(result.endingEquityJpy);
   });
 });
+
+describe("runBacktest / execution timing and price gaps", () => {
+  it("executes strategy signals at the next candle open in closed-bar mode", () => {
+    getCandlesForTimeframe.mockReturnValue([
+      candle(0, 90),
+      candle(60, 110), // buy signal is observed at this close
+      candle(120, 120, { open: 120 }), // pending buy executes here
+      candle(180, 90, { open: 100 }), // sell signal is observed at this close
+      candle(240, 80, { open: 80 }), // pending sell executes here
+    ]);
+
+    const result = runBacktest(
+      baseRequest({
+        executionMode: "closed_bar_next_tick",
+        positionSizeJpy: 10_000,
+        stopLossPct: 100,
+        takeProfitPct: 0,
+        trailingStopPct: null,
+      })
+    );
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].openedAt).toBe(120_000);
+    expect(result.trades[0].closedAt).toBe(240_000);
+    expect(result.trades[0].entryPrice).toBeCloseTo(120 * (1 + config.fees.slippagePct / 100), 8);
+    expect(result.trades[0].closePrice).toBeCloseTo(80 * (1 - config.fees.slippagePct / 100), 8);
+  });
+
+  it("uses the candle open when a stop is crossed by a downward price gap", () => {
+    getCandlesForTimeframe.mockReturnValue([
+      candle(0, 0),
+      candle(60, 100),
+      candle(120, 80, { open: 80, high: 100, low: 80 }),
+    ]);
+
+    const result = runBacktest(
+      baseRequest({
+        graph: buyOnceGraph(),
+        positionSizeJpy: 10_000,
+        stopLossPct: 5,
+        takeProfitPct: 0,
+        trailingStopPct: null,
+      })
+    );
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].closeReason).toBe("stop_loss");
+    expect(result.trades[0].closePrice).toBeCloseTo(80 * (1 - config.fees.slippagePct / 100), 8);
+  });
+});

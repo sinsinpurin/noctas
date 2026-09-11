@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { Box, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import type {
   BacktestPeriod,
+  BacktestExecutionMode,
   BacktestRequest,
   BacktestSummary,
   CandleTimeframe,
@@ -88,6 +89,7 @@ export function BacktestPanel({
   const [runningPeriod, setRunningPeriod] = useState<BacktestPeriod | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<BacktestSummary | null>(null);
+  const [executionMode, setExecutionMode] = useState<BacktestExecutionMode>("closed_bar_next_tick");
 
   const handleRun = useCallback(async (period: BacktestPeriod) => {
     setError(null);
@@ -104,7 +106,7 @@ export function BacktestPanel({
     setLoading(true);
     setRunningPeriod(period);
     try {
-      const request: BacktestRequest = { graph, pair, timeframe, period, ...risk.value };
+      const request: BacktestRequest = { graph, pair, timeframe, period, executionMode, ...risk.value };
       const result = await runBacktest(request);
       setSummary(result);
     } catch (err) {
@@ -114,11 +116,22 @@ export function BacktestPanel({
       setLoading(false);
       setRunningPeriod(null);
     }
-  }, [graph, pair, timeframe, riskForm, maxPositionJpy]);
+  }, [graph, pair, timeframe, riskForm, maxPositionJpy, executionMode]);
 
   return (
     <Stack gap={4}>
       <Stack direction="row" gap={3} align="center" flexWrap="wrap">
+        <Box as="label" display="flex" alignItems="center" gap={2} fontFamily="mono" fontSize="11px" color="text.secondary">
+          執行方式
+          <select
+            value={executionMode}
+            onChange={(event) => setExecutionMode(event.target.value as BacktestExecutionMode)}
+            style={{ background: "#1c1c24", color: "#f2f2f5", border: "1px solid rgba(255, 0, 60, 0.35)", padding: "6px 8px" }}
+          >
+            <option value="closed_bar_next_tick">確定足 → 次足始値</option>
+            <option value="legacy_intrabar">従来方式（同足）</option>
+          </select>
+        </Box>
         <CyberButton variant="primary" onClick={() => handleRun("loaded")} disabled={loading}>
           {loading && runningPeriod === "loaded" ? "Running..." : "Run Backtest"}
         </CyberButton>
@@ -126,7 +139,9 @@ export function BacktestPanel({
           {loading && runningPeriod === "three_months" ? "Loading 3 months..." : "Run 3-Month Simulation"}
         </CyberButton>
         <Text fontFamily="mono" fontSize="10px" color="text.disabled">
-          Backtest uses the live cache. 3-month simulation reads the rolling 90-day DB snapshot.
+          {executionMode === "closed_bar_next_tick"
+            ? "確定足で判断し、次足の始値で執行します。"
+            : "既存互換の同足終値で執行します。"} 3-month simulation reads the rolling 90-day DB snapshot.
         </Text>
       </Stack>
 
