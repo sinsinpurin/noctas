@@ -1,5 +1,9 @@
 :root {
   /* Cyberpsycho UI — Night City Interface Standard */
+  /* Keep the build and desktop export independent from network font downloads. */
+  --font-chakra-petch: "Trebuchet MS", "Arial Narrow", sans-serif;
+  --font-inter: Arial, "Segoe UI", sans-serif;
+  --font-jetbrains-mono: Consolas, "Courier New", monospace;
   --bg-void: #0a0a0d;
   --bg-surface: #131318;
   --bg-surface-raised: #1c1c24;

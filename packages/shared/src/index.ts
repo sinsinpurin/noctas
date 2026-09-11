@@ -255,6 +255,8 @@ export interface BacktestRequest extends Partial<StrategyRiskSettings> {
   timeframe: CandleTimeframe;
   /** loaded uses the server's live candle cache; three_months fetches the latest 90 days. */
   period?: BacktestPeriod;
+  /** 仮想口座の開始円残高。未指定はペーパートレードの初期残高を使う */
+  initialBalanceJpy?: number;
 }
 
 /** バックテストで仮想的に建てて決済した1回分の取引。ClosedPositionRecordに近い形にしている */
@@ -288,12 +290,22 @@ export interface BacktestSummary {
   avgLoss: number | null;
   profitFactor: number | null;
   maxDrawdown: number;
+  /** 含み損益を含む清算価値ベースの最大ドローダウン(正の値) */
+  liquidationMaxDrawdown: number;
+  /** 最大ドローダウンを期間中の資産ピークで割った率 */
+  liquidationMaxDrawdownPct: number | null;
+  /** 期間末に未決済の建玉を成行売却した想定の損益 */
+  unrealizedPnl: number;
+  /** 期間末の清算価値(初期残高 + 実現損益 + 未実現損益) */
+  endingEquityJpy: number;
   totalFeesJpy: number;
   /** 手数料控除前の合計損益(円)。各トレードのpnl + totalFeeJpyの合計 */
   grossPnlJpy: number;
   /** 値動きの方向は合っていた(grossPnlがプラス)のに、手数料込みの純pnlが0以下になったトレード件数 */
   feeLossCount: number;
   equityCurve: PnlCurvePoint[];
+  /** 含み損益を含む清算価値カーブ(timeはUNIX秒) */
+  liquidationEquityCurve: PnlCurvePoint[];
   trades: BacktestTrade[];
   /** The requested simulation period, included so the UI can label the result unambiguously. */
   period?: BacktestPeriod;

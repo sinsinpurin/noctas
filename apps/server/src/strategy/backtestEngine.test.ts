@@ -522,3 +522,31 @@ describe("runBacktest / maxOpenPositions caps concurrent simulated positions", (
     expect(result.trades[0].closeReason).toBe("take_profit");
   });
 });
+
+describe("runBacktest / liquidation equity includes open positions", () => {
+  it("reports end-of-period unrealized loss and drawdown even when no trade was closed", () => {
+    getCandlesForTimeframe.mockReturnValue([
+      candle(0, 0),
+      candle(60, 100), // buy edge
+      candle(120, 90), // remains open; no sell edge and SL is disabled
+    ]);
+
+    const result = runBacktest(
+      baseRequest({
+        graph: buyOnceGraph(),
+        positionSizeJpy: 10_000,
+        initialBalanceJpy: 100_000,
+        stopLossPct: 100,
+        takeProfitPct: 0,
+        trailingStopPct: null,
+      })
+    );
+
+    expect(result.trades).toHaveLength(0);
+    expect(result.realizedPnl).toBe(0);
+    expect(result.unrealizedPnl).toBeLessThan(0);
+    expect(result.endingEquityJpy).toBeLessThan(100_000);
+    expect(result.liquidationMaxDrawdown).toBeGreaterThan(0);
+    expect(result.liquidationEquityCurve.at(-1)?.value).toBe(result.endingEquityJpy);
+  });
+});
