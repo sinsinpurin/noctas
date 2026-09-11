@@ -90,6 +90,7 @@ export function BacktestPanel({
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<BacktestSummary | null>(null);
   const [executionMode, setExecutionMode] = useState<BacktestExecutionMode>("closed_bar_next_tick");
+  const [costScenario, setCostScenario] = useState<"standard" | "stressed">("standard");
 
   const handleRun = useCallback(async (period: BacktestPeriod) => {
     setError(null);
@@ -106,7 +107,18 @@ export function BacktestPanel({
     setLoading(true);
     setRunningPeriod(period);
     try {
-      const request: BacktestRequest = { graph, pair, timeframe, period, executionMode, ...risk.value };
+      const request: BacktestRequest = {
+        graph,
+        pair,
+        timeframe,
+        period,
+        executionMode,
+        costProfile:
+          costScenario === "stressed"
+            ? { feePct: 0.24, slippagePct: 0.04, label: "stressed_2x" }
+            : { feePct: 0.12, slippagePct: 0.02, label: "standard" },
+        ...risk.value,
+      };
       const result = await runBacktest(request);
       setSummary(result);
     } catch (err) {
@@ -116,7 +128,7 @@ export function BacktestPanel({
       setLoading(false);
       setRunningPeriod(null);
     }
-  }, [graph, pair, timeframe, riskForm, maxPositionJpy, executionMode]);
+  }, [graph, pair, timeframe, riskForm, maxPositionJpy, executionMode, costScenario]);
 
   return (
     <Stack gap={4}>
@@ -130,6 +142,17 @@ export function BacktestPanel({
           >
             <option value="closed_bar_next_tick">確定足 → 次足始値</option>
             <option value="legacy_intrabar">従来方式（同足）</option>
+          </select>
+        </Box>
+        <Box as="label" display="flex" alignItems="center" gap={2} fontFamily="mono" fontSize="11px" color="text.secondary">
+          コスト
+          <select
+            value={costScenario}
+            onChange={(event) => setCostScenario(event.target.value as "standard" | "stressed")}
+            style={{ background: "#1c1c24", color: "#f2f2f5", border: "1px solid rgba(255, 0, 60, 0.35)", padding: "6px 8px" }}
+          >
+            <option value="standard">標準コスト</option>
+            <option value="stressed">悪化想定（2倍）</option>
           </select>
         </Box>
         <CyberButton variant="primary" onClick={() => handleRun("loaded")} disabled={loading}>
