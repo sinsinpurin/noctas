@@ -56,8 +56,16 @@ export interface StrategyBody {
   trailingStopPct?: number | null;
 }
 
-/** リスク設定の妥当性を検証し、エラーメッセージまたはnullを返す */
-export function validateRiskSettings(body: StrategyBody): string | null {
+/** リスク設定の妥当性を検証し、エラーメッセージまたはnullを返す
+ * enforceRatio: リスクリワード比(takeProfitPct >= stopLossPct)の検証を行うかどうか(デフォルトtrue)。
+ * ウォークフォワード検証(walkForwardEngine)が実測PnLに基づいて選んだrecommendedParamsを
+ * 適用するapply-walk-forward-paramsの呼び出しだけはfalseを渡し、この検証をスキップする。
+ * この比率チェックはUIで人間が手動設定する際の入力ミス防止が目的で、ウォークフォワードが
+ * バックテストで実証済みの組み合わせを事後的に否定するためのものではない。 */
+export function validateRiskSettings(
+  body: StrategyBody,
+  { enforceRatio = true }: { enforceRatio?: boolean } = {}
+): string | null {
   const positives: [string, number | null | undefined][] = [
     ["positionSizeJpy", body.positionSizeJpy],
     ["stopLossPct", body.stopLossPct],
@@ -101,6 +109,19 @@ export function validateRiskSettings(body: StrategyBody): string | null {
     (!Number.isInteger(body.maxOpenPositions) || body.maxOpenPositions < 1)
   ) {
     return "maxOpenPositions は1以上の整数またはnullで指定してください";
+  }
+  // stopLossPct/takeProfitPctが同一リクエストで両方明示された場合のみ、リスクリワード比を検証する
+  // (片方のみ指定の部分更新はDB上の既存値との比較まではしない。要素をまたぐ検証は対象外)
+  if (
+    enforceRatio &&
+    body.stopLossPct !== undefined &&
+    body.stopLossPct !== null &&
+    body.takeProfitPct !== undefined &&
+    body.takeProfitPct !== null &&
+    body.takeProfitPct !== 0 &&
+    body.takeProfitPct < body.stopLossPct
+  ) {
+    return "利確%は損切り%以上で指定してください(リスクリワード比が1:1を下回る設定は受け付けません)";
   }
   return null;
 }
@@ -424,7 +445,10 @@ export async function strategyRoutes(app: FastifyInstance) {
     }
 
     const riskBody: StrategyBody = { stopLossPct, takeProfitPct, trailingStopPct };
-    const riskError = validateRiskSettings(riskBody);
+    // ウォークフォワードのrecommendedParamsはPnL/トレード数で選ばれた実測結果であり、
+    // リスクリワード比の制約なしにグリッドサーチされている。1:1比の検証(enforceRatio)は
+    // 人間の手動設定ミスを防ぐためのものなので、ここでは適用しない。
+    const riskError = validateRiskSettings(riskBody, { enforceRatio: false });
     if (riskError) {
       return reply.status(400).send({ error: riskError });
     }
