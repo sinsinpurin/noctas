@@ -50,7 +50,8 @@ function emptySummary(
   candleCount: number,
   warnings: string[],
   period: BacktestSummary["period"],
-  candles: CandleBucket[]
+  candles: CandleBucket[],
+  initialBalanceJpy = 1_000_000
 ): BacktestSummary {
   return {
     candleCount,
@@ -63,10 +64,15 @@ function emptySummary(
     avgLoss: null,
     profitFactor: null,
     maxDrawdown: 0,
+    liquidationMaxDrawdown: 0,
+    liquidationMaxDrawdownPct: null,
+    unrealizedPnl: 0,
+    endingEquityJpy: Math.max(0, initialBalanceJpy),
     totalFeesJpy: 0,
     grossPnlJpy: 0,
     feeLossCount: 0,
     equityCurve: [],
+    liquidationEquityCurve: [],
     trades: [],
     period,
     dataStartAt: candles[0]?.time,
@@ -164,7 +170,7 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   const candleCount = candles.length;
   if (candleCount < 2) {
     warnings.push("ローソク足データが不足しているため、バックテストを実行できませんでした(最低2本必要)。");
-    return emptySummary(candleCount, warnings, period, candles);
+    return emptySummary(candleCount, warnings, period, candles, request.initialBalanceJpy);
   }
 
   const positionSizeJpy = Math.min(
@@ -179,6 +185,9 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   const openPositions: OpenSimPosition[] = [];
   const trades: BacktestTrade[] = [];
   const equityCurve: PnlCurvePoint[] = [];
+  const liquidationEquityCurve: PnlCurvePoint[] = [];
+  const initialBalanceJpy = Math.max(0, request.initialBalanceJpy ?? 1_000_000);
+  let cashJpy = initialBalanceJpy;
   let realizedPnl = 0;
   let winCount = 0;
   let lossCount = 0;
@@ -189,6 +198,9 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   let feeLossCount = 0;
   let peak = 0;
   let maxDrawdown = 0;
+  let liquidationPeak = initialBalanceJpy;
+  let liquidationMaxDrawdown = 0;
+  let liquidationPeakForPct = initialBalanceJpy;
   const seenErrors = new Set<string>();
 
   function recordClose(trade: BacktestTrade) {
@@ -218,6 +230,19 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
     maxDrawdown = Math.max(maxDrawdown, peak - realizedPnl);
   }
 
+  function markLiquidationEquity(candle: CandleBucket) {
+    let equity = cashJpy;
+    for (const pos of openPositions) {
+      const sellPrice = executionPrice(candle.close, "sell");
+      equity += sellPrice * pos.amount - feeOf(sellPrice * pos.amount);
+    }
+    const time = Math.floor(candle.time);
+    liquidationEquityCurve.push({ time, value: equity });
+    liquidationPeak = Math.max(liquidationPeak, equity);
+    liquidationMaxDrawdown = Math.max(liquidationMaxDrawdown, liquidationPeak - equity);
+    liquidationPeakForPct = Math.max(liquidationPeakForPct, equity);
+  }
+
   const closes: number[] = [];
   const volumes: number[] = [];
   const timestamps: number[] = [];
@@ -232,10 +257,15 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
       const exit = checkPositionExit(pos, candle, stopLossPct, takeProfitPct, trailingStopPct);
       if (!exit) continue;
       openPositions.splice(i, 1);
-      recordClose(closeSimPosition(pos, exit.price, exit.reason, candle.time * 1000));
+      const trade = closeSimPosition(pos, exit.price, exit.reason, candle.time * 1000);
+      cashJpy += trade.closePrice * trade.amount - feeOf(trade.closePrice * trade.amount);
+      recordClose(trade);
     }
 
-    if (closes.length < 2) continue;
+    if (closes.length < 2) {
+      markLiquidationEquity(candle);
+      continue;
+    }
 
     const evaluation = evaluateGraph(request.graph, closes, {
       hasOpenPosition: openPositions.length > 0,
@@ -246,6 +276,7 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
 
     if (evaluation.errors.length > 0) {
       for (const err of evaluation.errors) seenErrors.add(err);
+      markLiquidationEquity(candle);
       continue;
     }
 
@@ -256,16 +287,37 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
     if (shouldSell) {
       const pos = openPositions.shift();
       if (pos) {
-        recordClose(closeSimPosition(pos, candle.close, "bot_strategy", candle.time * 1000));
+        const trade = closeSimPosition(pos, candle.close, "bot_strategy", candle.time * 1000);
+        cashJpy += trade.closePrice * trade.amount - feeOf(trade.closePrice * trade.amount);
+        recordClose(trade);
       }
     } else if (shouldBuy && openPositions.length < maxOpenPositions) {
-      openPositions.push(openSimPosition(candle.close, positionSizeJpy, candle.time * 1000));
+      const pos = openSimPosition(candle.close, positionSizeJpy, candle.time * 1000);
+      const entryNotional = pos.entryPrice * pos.amount;
+      const totalEntryCost = entryNotional + pos.entryFee;
+      if (cashJpy >= totalEntryCost) {
+        cashJpy -= totalEntryCost;
+        openPositions.push(pos);
+      }
     }
+
+    markLiquidationEquity(candle);
   }
 
   if (seenErrors.size > 0) {
     warnings.push(`グラフの評価中にエラーが発生した区間があります: ${[...seenErrors].join(" / ")}`);
   }
+
+  const lastCandle = candles[candles.length - 1];
+  let unrealizedPnl = 0;
+  if (lastCandle) {
+    const exitPrice = executionPrice(lastCandle.close, "sell");
+    for (const pos of openPositions) {
+      const exitFee = feeOf(exitPrice * pos.amount);
+      unrealizedPnl += (exitPrice - pos.entryPrice) * pos.amount - pos.entryFee - exitFee;
+    }
+  }
+  const endingEquityJpy = initialBalanceJpy + realizedPnl + unrealizedPnl;
 
   return {
     candleCount,
@@ -277,11 +329,19 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
     avgWin: winCount > 0 ? grossProfit / winCount : null,
     avgLoss: lossCount > 0 ? -(grossLoss / lossCount) : null,
     profitFactor: grossLoss > 0 ? grossProfit / grossLoss : null,
-    maxDrawdown,
+    // 既存のmaxDrawdownは、UI/ウォークフォワードが参照する主要指標として
+    // 含み損益込みの清算価値ベースに更新する。実現損益だけの値は内部集計に残す。
+    maxDrawdown: liquidationMaxDrawdown,
+    liquidationMaxDrawdown,
+    liquidationMaxDrawdownPct:
+      liquidationPeakForPct > 0 ? liquidationMaxDrawdown / liquidationPeakForPct : null,
+    unrealizedPnl,
+    endingEquityJpy,
     totalFeesJpy,
     grossPnlJpy,
     feeLossCount,
     equityCurve,
+    liquidationEquityCurve,
     trades,
     period,
     dataStartAt: candles[0]?.time,
