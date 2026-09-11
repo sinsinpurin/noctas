@@ -251,6 +251,12 @@ export type BacktestPeriod = "loaded" | "three_months";
 /** シグナルを同じ足の終値で約定させる旧方式か、次足始値で約定させる方式か */
 export type BacktestExecutionMode = "legacy_intrabar" | "closed_bar_next_tick";
 
+export interface BacktestCostProfile {
+  feePct: number;
+  slippagePct: number;
+  label?: string;
+}
+
 export interface BacktestRequest extends Partial<StrategyRiskSettings> {
   graph: StrategyGraph;
   pair: Pair;
@@ -261,6 +267,7 @@ export interface BacktestRequest extends Partial<StrategyRiskSettings> {
   initialBalanceJpy?: number;
   /** 未指定は既存互換のlegacy_intrabar。新規検証ではclosed_bar_next_tickを推奨 */
   executionMode?: BacktestExecutionMode;
+  costProfile?: BacktestCostProfile;
 }
 
 /** バックテストで仮想的に建てて決済した1回分の取引。ClosedPositionRecordに近い形にしている */

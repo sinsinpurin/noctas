@@ -4,6 +4,7 @@ import {
   type BacktestSummary,
   type BacktestTrade,
   type BacktestExecutionMode,
+  type BacktestCostProfile,
   type PnlCurvePoint,
   type TradeReason,
 } from "@noctas/shared";
@@ -45,6 +46,20 @@ interface OpenSimPosition {
   entryFee: number;
   openedAt: number;
   highestPrice: number;
+}
+
+interface SimulationCosts {
+  feePct: number;
+  slippagePct: number;
+}
+
+function executionPriceWithCosts(price: number, side: "buy" | "sell", costs: SimulationCosts): number {
+  const slip = costs.slippagePct / 100;
+  return price * (side === "buy" ? 1 + slip : 1 - slip);
+}
+
+function feeWithCosts(notional: number, costs: SimulationCosts): number {
+  return notional * (costs.feePct / 100);
 }
 
 function emptySummary(
@@ -153,12 +168,46 @@ function closeSimPosition(
   };
 }
 
+function closeSimPositionWithCosts(
+  pos: OpenSimPosition,
+  triggerPrice: number,
+  reason: TradeReason,
+  closedAtMs: number,
+  costs: SimulationCosts
+): BacktestTrade {
+  const execPrice = executionPriceWithCosts(triggerPrice, "sell", costs);
+  const exitFee = feeWithCosts(execPrice * pos.amount, costs);
+  return {
+    side: "buy",
+    entryPrice: pos.entryPrice,
+    amount: pos.amount,
+    openedAt: pos.openedAt,
+    closedAt: closedAtMs,
+    closePrice: execPrice,
+    pnl: (execPrice - pos.entryPrice) * pos.amount - pos.entryFee - exitFee,
+    closeReason: reason,
+    totalFeeJpy: pos.entryFee + exitFee,
+  };
+}
+
 /** paperTradingEngine.openBuyPosition()と同じ計算式で仮想ポジションを建てる */
 function openSimPosition(marketPrice: number, sizeJpy: number, openedAtMs: number): OpenSimPosition {
   const execPrice = executionPrice(marketPrice, "buy");
   const amount = sizeJpy / execPrice;
   const cost = execPrice * amount;
   const entryFee = feeOf(cost);
+  return { entryPrice: execPrice, amount, entryFee, openedAt: openedAtMs, highestPrice: execPrice };
+}
+
+function openSimPositionWithCosts(
+  marketPrice: number,
+  sizeJpy: number,
+  openedAtMs: number,
+  costs: SimulationCosts
+): OpenSimPosition {
+  const execPrice = executionPriceWithCosts(marketPrice, "buy", costs);
+  const amount = sizeJpy / execPrice;
+  const entryFee = feeWithCosts(execPrice * amount, costs);
   return { entryPrice: execPrice, amount, entryFee, openedAt: openedAtMs, highestPrice: execPrice };
 }
 
@@ -188,6 +237,20 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   const takeProfitPct = request.takeProfitPct ?? null;
   const trailingStopPct = request.trailingStopPct ?? null;
   const executionMode: BacktestExecutionMode = request.executionMode ?? "legacy_intrabar";
+  const requestedCosts: BacktestCostProfile = request.costProfile ?? {
+    feePct: config.fees.takerFeePct,
+    slippagePct: config.fees.slippagePct,
+  };
+  const costs: SimulationCosts = {
+    feePct: Number.isFinite(requestedCosts.feePct) && requestedCosts.feePct >= 0 ? requestedCosts.feePct : config.fees.takerFeePct,
+    slippagePct:
+      Number.isFinite(requestedCosts.slippagePct) && requestedCosts.slippagePct >= 0
+        ? requestedCosts.slippagePct
+        : config.fees.slippagePct,
+  };
+  if (costs.feePct !== requestedCosts.feePct || costs.slippagePct !== requestedCosts.slippagePct) {
+    warnings.push("costProfileの値が不正なため、既定のコスト設定を使用しました。");
+  }
 
   const openPositions: OpenSimPosition[] = [];
   const trades: BacktestTrade[] = [];
@@ -242,8 +305,8 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   function markLiquidationEquity(candle: CandleBucket) {
     let equity = cashJpy;
     for (const pos of openPositions) {
-      const sellPrice = executionPrice(candle.close, "sell");
-      equity += sellPrice * pos.amount - feeOf(sellPrice * pos.amount);
+      const sellPrice = executionPriceWithCosts(candle.close, "sell", costs);
+      equity += sellPrice * pos.amount - feeWithCosts(sellPrice * pos.amount, costs);
     }
     const time = Math.floor(candle.time);
     liquidationEquityCurve.push({ time, value: equity });
@@ -266,8 +329,8 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
       const exit = checkPositionExit(pos, candle, stopLossPct, takeProfitPct, trailingStopPct);
       if (!exit) continue;
       openPositions.splice(i, 1);
-      const trade = closeSimPosition(pos, exit.price, exit.reason, candle.time * 1000);
-      cashJpy += trade.closePrice * trade.amount - feeOf(trade.closePrice * trade.amount);
+      const trade = closeSimPositionWithCosts(pos, exit.price, exit.reason, candle.time * 1000, costs);
+      cashJpy += trade.closePrice * trade.amount - feeWithCosts(trade.closePrice * trade.amount, costs);
       recordClose(trade);
     }
 
@@ -281,12 +344,12 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
       if (pendingSell) {
         const pos = openPositions.shift();
         if (pos) {
-          const trade = closeSimPosition(pos, candle.open, "bot_strategy", candle.time * 1000);
-          cashJpy += trade.closePrice * trade.amount - feeOf(trade.closePrice * trade.amount);
+          const trade = closeSimPositionWithCosts(pos, candle.open, "bot_strategy", candle.time * 1000, costs);
+          cashJpy += trade.closePrice * trade.amount - feeWithCosts(trade.closePrice * trade.amount, costs);
           recordClose(trade);
         }
       } else if (pendingBuy && openPositions.length < maxOpenPositions) {
-        const pos = openSimPosition(candle.open, positionSizeJpy, candle.time * 1000);
+        const pos = openSimPositionWithCosts(candle.open, positionSizeJpy, candle.time * 1000, costs);
         const totalEntryCost = pos.entryPrice * pos.amount + pos.entryFee;
         if (cashJpy >= totalEntryCost) {
           cashJpy -= totalEntryCost;
@@ -320,12 +383,12 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
     } else if (shouldSell) {
       const pos = openPositions.shift();
       if (pos) {
-        const trade = closeSimPosition(pos, candle.close, "bot_strategy", candle.time * 1000);
-        cashJpy += trade.closePrice * trade.amount - feeOf(trade.closePrice * trade.amount);
+        const trade = closeSimPositionWithCosts(pos, candle.close, "bot_strategy", candle.time * 1000, costs);
+        cashJpy += trade.closePrice * trade.amount - feeWithCosts(trade.closePrice * trade.amount, costs);
         recordClose(trade);
       }
     } else if (shouldBuy && openPositions.length < maxOpenPositions) {
-      const pos = openSimPosition(candle.close, positionSizeJpy, candle.time * 1000);
+      const pos = openSimPositionWithCosts(candle.close, positionSizeJpy, candle.time * 1000, costs);
       const entryNotional = pos.entryPrice * pos.amount;
       const totalEntryCost = entryNotional + pos.entryFee;
       if (cashJpy >= totalEntryCost) {
@@ -344,9 +407,9 @@ export function runBacktest(request: BacktestRequest, candlesOverride?: CandleBu
   const lastCandle = candles[candles.length - 1];
   let unrealizedPnl = 0;
   if (lastCandle) {
-    const exitPrice = executionPrice(lastCandle.close, "sell");
+    const exitPrice = executionPriceWithCosts(lastCandle.close, "sell", costs);
     for (const pos of openPositions) {
-      const exitFee = feeOf(exitPrice * pos.amount);
+      const exitFee = feeWithCosts(exitPrice * pos.amount, costs);
       unrealizedPnl += (exitPrice - pos.entryPrice) * pos.amount - pos.entryFee - exitFee;
     }
   }
